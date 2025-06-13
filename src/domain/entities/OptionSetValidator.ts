@@ -2,18 +2,11 @@ import _ from "lodash";
 import { Maybe } from "utils/ts-utils";
 import { CrossValidationStrategy } from "./options/CrossValidationStrategy";
 import { Struct } from "./generic/Struct";
-import { Option } from "./Option";
 import { OptionSet } from "./OptionSet";
 import { Exceptions, Project, Service } from "./Service";
 import { EDValidationStrategy } from "./options/EDValidationStrategy";
 import { AggrValidationStrategy } from "./options/AggrValidationStrategy";
 import { Id } from "./Base";
-import {
-    getValidationErrorFromCode,
-    replaceByUnderScores,
-    validateCode,
-    validateName,
-} from "./options/validation";
 import { ServiceValidationStrategy } from "./options/ServiceValidationStrategy";
 
 export type ValidationRule =
@@ -42,7 +35,7 @@ export type ValidationError = {
 
 export class OptionSetValidator extends Struct<OptionSetValidatorAttrs>() {
     // commas and back and forward slashes
-    static NAME_FORBIDDEN = /[\/,]/;
+    static NAME_FORBIDDEN = /[\\/,]/;
 
     // only uppercase letters, digits, and underscores are allowed
     static CODE_LOWERCASE = /[a-z]/;

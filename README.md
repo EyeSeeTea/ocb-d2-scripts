@@ -46,7 +46,7 @@ Option Sets code and Option code:
 -   Accepted: Upper case and underscore
 -   Errors: All the other characters. Name and code uniques across option sets.
 
-And additional patterns you can find in folder src/domain/entities/options (files ends with Strategy)
+Additional patterns can be found in the folder src/domain/entities/options (files ending with Strategy).
 
 ```shell
 yarn start options analyze \
@@ -57,6 +57,7 @@ yarn start options analyze \
     --exceptions-path=exceptions.csv \
     --report-path='report-name.csv' \  # default is option-report.csv
     --unknown-report-path='unknown-optionset-report.csv' # default is unknown-optionset-report.csv
+    --update # persist changes
 ```
 
 Services must be a csv file with the following format:
@@ -96,7 +97,7 @@ Get a comparison between a main server and multiple replicas:
 
 \*For users `openId` is being used as `ID`
 
-```bash
+```shell
 yarn start metadata sync \
 --check-models=users,indicators \
 --ignore-models=ignore-models.csv \ # metadata you want to exclude
@@ -122,7 +123,7 @@ visualizations
             "auth": "admin:district",
             // you can use a PAT token as an alternative to user/passwod authentication
             "personalToken": "your_token_here",
-            // isMain must be use for the METADATA server
+            // isMain must be used for the METADATA server
             "isMain": true
         },
         {

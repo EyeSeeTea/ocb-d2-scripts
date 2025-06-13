@@ -54,7 +54,7 @@ export function getApiUrlOptions() {
             description: "http[s]://[USERNAME:PASSWORD@]HOST:PORT",
         }),
         auth: option({
-            type: optional(AuthString),
+            type: optional(AuthTokenString),
             long: "auth",
             description: "USERNAME:PASSWORD",
         }),
@@ -201,4 +201,14 @@ export const buildAuthFromString = (str: string): Auth => {
     const [username, password] = str.split(":");
     if (!username || !password) throw new Error(`Invalid pair: ${str} (expected USERNAME:PASSWORD)`);
     return { type: "basic", username: username, password: password };
+};
+
+export const AuthTokenString: Type<string, Auth> = {
+    async from(str) {
+        if (str.includes(":")) {
+            return buildAuthFromString(str);
+        } else {
+            return { type: "personalToken", token: str };
+        }
+    },
 };

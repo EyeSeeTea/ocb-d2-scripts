@@ -71,7 +71,7 @@ export const analyzeOptionsCmd = command({
             exceptions,
         });
 
-        if (optionSetValidations.optionSetValidations.length > 0) {
+        if (optionSetValidations.optionSetValidations.length > 0 || optionSetValidations.unknown.length > 0) {
             await new OptionSetValidatorReport().generateReport({
                 csvPath: args.reportPath,
                 csvUnknownPath: args.unknownReportPath,

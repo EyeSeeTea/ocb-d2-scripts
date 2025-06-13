@@ -125,7 +125,7 @@ export class SyncMetadataUseCase {
             )
             .value();
 
-        return replicaList
+        return _(replicaList)
             .filter(replicaObj => replicaObj.model === model)
             .filter(replicaObj => {
                 const replicaId = isUserModel(replicaObj) ? replicaObj.openId : replicaObj.id;
@@ -138,7 +138,8 @@ export class SyncMetadataUseCase {
             })
             .map(replicaObj => {
                 const replicaId = isUserModel(replicaObj) ? replicaObj.openId : replicaObj.id;
-                const mainObj = mainById[replicaId]!;
+                const mainObj = mainById[replicaId];
+                if (!mainObj) return undefined;
                 return {
                     model,
                     id: replicaId,
@@ -147,7 +148,9 @@ export class SyncMetadataUseCase {
                     replicaIndex: replicaIdx,
                     differingFields: ["code"],
                 };
-            });
+            })
+            .compact()
+            .value();
     }
 
     /* 
@@ -234,8 +237,7 @@ export class SyncMetadataUseCase {
         const { model, server } = options;
         const allObjects: MetadataObject[] = [];
 
-        let page = 1;
-        while (true) {
+        for (let page = 1; ; page++) {
             const { objects, pager } = await server.getPaginated({
                 model: model,
                 page: page,
@@ -243,7 +245,6 @@ export class SyncMetadataUseCase {
             allObjects.push(...objects.filter(obj => (isUserModel(obj) ? obj.openId : obj.id)));
 
             if (pager.page >= pager.pageCount) break;
-            page++;
         }
 
         return allObjects;
