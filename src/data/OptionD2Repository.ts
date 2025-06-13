@@ -1,4 +1,4 @@
-import { D2Api } from "@eyeseetea/d2-api/2.36";
+import { D2Api } from "../types/d2-api";
 import { Async } from "domain/entities/Async";
 import { Option } from "domain/entities/Option";
 import { OptionRepository } from "domain/repositories/OptionRepository";

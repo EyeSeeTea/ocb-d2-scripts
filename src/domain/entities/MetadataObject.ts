@@ -9,8 +9,19 @@ export interface MetadataObject {
     id: Id;
     name: string;
     code: Maybe<string>;
+    additionalFields?: Record<string, unknown>;
+    openId: string;
+}
+
+export interface UserMetadataObject extends MetadataObject {
+    openId: string;
+    type: "user";
 }
 
 export interface MetadataObjectWithTranslations extends MetadataObject {
     translations: Translation[];
+}
+
+export function isUserModel(metadataObject: MetadataObject): boolean {
+    return metadataObject.model === "users";
 }

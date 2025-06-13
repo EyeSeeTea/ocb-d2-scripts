@@ -46,7 +46,7 @@ Option Sets code and Option code:
 -   Accepted: Upper case and underscore
 -   Errors: All the other characters. Name and code uniques across option sets.
 
-And additional patterns you can find in folder src/domain/entities/options
+And additional patterns you can find in folder src/domain/entities/options (files ends with Strategy)
 
 ```shell
 yarn start options analyze \
@@ -82,4 +82,53 @@ Projects must be a csv with [name,code] format:
 PCode-1,Project Code1
 PCode-2,Project Code2
 PCode-3,Project Code3
+```
+
+## Metadata
+
+### sync
+
+Get a comparison between a main server and multiple replicas:
+
+-   Identify metadata objects that exist only in one of the instances (based on IDs).
+-   Detect objects with the same ID but different codes to flag discrepancies.
+-   Detect objects with the same ID but different in any fields.
+
+\*For users `openId` is being used as `ID`
+
+```bash
+yarn start metadata sync \
+--check-models=users,indicators \
+--ignore-models=ignore-models.csv \ # metadata you want to exclude
+--server-config=servers_msf.json
+```
+
+-   check-models: any valid DHIS2 metadata. Check the `getAllMetadataModels` function in the `sync.ts` file for the complete list
+-   ignore-models: a csv file with the models you want to ignore:
+
+```csv
+users
+dashboards
+visualizations
+```
+
+-   server-config: a json file with servers configuration:
+
+```ts
+{
+    "servers": [
+        {
+            "url": "https://play.im.dhis2.org/stable-2-40-7-1",
+            "auth": "admin:district",
+            // you can use a PAT token as an alternative to user/passwod authentication
+            "personalToken": "your_token_here",
+            // isMain must be use for the METADATA server
+            "isMain": true
+        },
+        {
+            "url": "https://play.im.dhis2.org/stable-2-41-4",
+            "auth": "admin:district"
+        }
+    ]
+}
 ```
