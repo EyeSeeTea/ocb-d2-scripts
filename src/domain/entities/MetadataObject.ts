@@ -4,19 +4,24 @@ import { Translation } from "./Translation";
 
 export type MetadataModel = string; // Ex: "dataElements".
 
-export interface MetadataObject {
+export interface MetadataObjectBase {
     model: MetadataModel;
     id: Id;
     name: string;
     code: Maybe<string>;
     additionalFields?: Record<string, unknown>;
-    openId: string;
 }
 
-export interface UserMetadataObject extends MetadataObject {
+export interface MetadataObject extends MetadataObjectBase {
+    type: "common";
+}
+
+export interface UserMetadataObject extends MetadataObjectBase {
     openId: string;
     type: "user";
 }
+
+export type MetadataObjectWithType = MetadataObject | UserMetadataObject;
 
 export interface MetadataObjectWithTranslations extends MetadataObject {
     translations: Translation[];

@@ -2,15 +2,14 @@ import _ from "lodash";
 import { D2Api } from "../types/d2-api";
 import { Async } from "domain/entities/Async";
 import { Id } from "domain/entities/Base";
-import { MetadataRepository, Payload, SaveOptions } from "domain/repositories/MetadataRepository";
-import { getPluralModel, runMetadata } from "./dhis2-utils";
-import log from "utils/log";
+import { MetadataRepository } from "domain/repositories/MetadataRepository";
+import { getPluralModel } from "./dhis2-utils";
 import {
     MetadataModel,
     MetadataObject,
-    MetadataObjectWithTranslations,
+    MetadataObjectWithType,
+    UserMetadataObject,
 } from "domain/entities/MetadataObject";
-import { D2Translation } from "@eyeseetea/d2-api/schemas";
 import { Maybe } from "utils/ts-utils";
 import { Pager } from "domain/entities/Pager";
 import { Paginated } from "domain/entities/Pagination";
@@ -18,24 +17,10 @@ import { Paginated } from "domain/entities/Pagination";
 export class MetadataD2Repository implements MetadataRepository {
     constructor(private api: D2Api) {}
 
-    async getAllWithTranslations(models: string[]): Async<MetadataObjectWithTranslations[]> {
-        return this.getMetadataObjects(models);
-    }
-
-    async save(objects: MetadataObject[], options: SaveOptions): Async<{ payload: Payload; stats: object }> {
-        const payload = await this.mergeWithExistingObjects(objects);
-
-        const res = await runMetadata(
-            this.api.metadata.post(payload, {
-                mergeMode: "REPLACE",
-                importMode: options.dryRun ? "VALIDATE" : "COMMIT",
-            })
-        );
-
-        return { payload, stats: res.stats };
-    }
-
-    async getPaginated(options: { model: MetadataModel; page: number }): Async<Paginated<MetadataObject>> {
+    async getPaginated(options: {
+        model: MetadataModel;
+        page: number;
+    }): Async<Paginated<MetadataObjectWithType>> {
         // endpoint users pager has a for older DHIS2 (page > 1 return only one object),
         // don't page in this case.
         if (options.model === "users") {
@@ -50,12 +35,13 @@ export class MetadataD2Repository implements MetadataRepository {
 
             const objects = _(res[options.model])
                 .map(
-                    (user): MetadataObject => ({
+                    (user): UserMetadataObject => ({
                         ...user,
                         model: options.model,
                         code: user.userCredentials.username,
                         additionalFields: { ...user },
                         openId: user.openId,
+                        type: "user",
                     })
                 )
                 .value();
@@ -80,7 +66,7 @@ export class MetadataD2Repository implements MetadataRepository {
                         ...obj,
                         model: options.model,
                         additionalFields: { ...obj },
-                        openId: obj.id,
+                        type: "common",
                     })
                 )
                 .value();
@@ -88,98 +74,6 @@ export class MetadataD2Repository implements MetadataRepository {
             return { objects: objects, pager: res.pager };
         }
     }
-
-    private async mergeWithExistingObjects(objects: MetadataObject[]): Async<Metadata> {
-        const models = _(objects)
-            .map(obj => obj.model)
-            .uniq()
-            .value();
-
-        const objectsExisting = await this.getD2Objects(models);
-        const objectsExistingById = _.keyBy(objectsExisting, obj => obj.id);
-
-        const metadataToPost = _(objects)
-            .map(object => {
-                const objectExisting = objectsExistingById[object.id];
-
-                if (!objectExisting) {
-                    log.warn(`Cannot find object: ${object.id}`);
-                    return undefined;
-                } else {
-                    return {
-                        model: object.model,
-                        object: { ...objectExisting, ...buildObject(object) },
-                    };
-                }
-            })
-            .compact()
-            .groupBy(o => getPluralModel(o.model)) // Metadata payload uses plural name for models.
-            .mapValues(os => os.map(o => o.object))
-            .value();
-
-        return metadataToPost;
-    }
-
-    private async getD2Metadata(models: string[]): Async<Metadata> {
-        const params = _(models)
-            .map(model => [`${getPluralModel(model)}:fields`, ":owner"] as [string, string])
-            .fromPairs()
-            .value();
-
-        type Model = string;
-        type MetadataRes = Record<Model, Array<D2Object>>;
-
-        log.debug(`GET metadata: ${JSON.stringify(params)}`);
-        return this.api.get<MetadataRes>("/metadata", params).getData();
-    }
-
-    private async getD2Objects(models: string[]): Async<D2Object[]> {
-        const metadata = await this.getD2Metadata(models);
-        return _(metadata).values().flatten().value();
-    }
-
-    private async getMetadataObjects(models: string[]): Async<MetadataObjectWithTranslations[]> {
-        const metadata = await this.getD2Metadata(models);
-
-        return _(metadata)
-            .toPairs()
-            .flatMap(([modelPlural, d2Objects]) => {
-                return _(d2Objects)
-                    .map((d2Object): Maybe<MetadataObjectWithTranslations> => {
-                        return d2Object.id
-                            ? {
-                                  code: d2Object.code,
-                                  ...d2Object,
-                                  model: modelPlural,
-                                  translations: d2Object.translations || [],
-                                  openId: d2Object.id,
-                              }
-                            : undefined;
-                    })
-                    .compact()
-                    .value();
-            })
-            .value();
-    }
-}
-
-type Model = string;
-
-type Metadata = Record<Model, Array<D2Object>>;
-
-interface D2ObjectBase {
-    id: Id;
-    name: string;
-    code?: string;
-    translations: D2Translation[];
-}
-
-type D2Object = D2ObjectBase & {
-    withOwnerFields: never;
-};
-
-function buildObject(object: MetadataObject): Partial<D2Object> {
-    return object;
 }
 
 interface BasicD2Object {

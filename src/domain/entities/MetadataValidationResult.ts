@@ -1,10 +1,10 @@
 import { Id } from "./Base";
-import { MetadataModel, MetadataObject } from "./MetadataObject";
+import { MetadataModel, MetadataObjectWithType } from "./MetadataObject";
 
 export type Source = { type: "main" } | { type: "replica"; index: number };
 
 export type ExclusiveMetadataItem = {
-    object: MetadataObject;
+    object: MetadataObjectWithType;
     source: Source;
 };
 
@@ -16,8 +16,8 @@ export type MetadataValidationResult = {
 export type DiscrepancyMetadata = {
     model: MetadataModel;
     id: Id;
-    mainObject: MetadataObject;
-    replicaObject: MetadataObject;
+    mainObject: MetadataObjectWithType;
+    replicaObject: MetadataObjectWithType;
     replicaIndex: number;
     differingFields: string[];
 };
@@ -41,4 +41,5 @@ export const METADATA_PROPERTIES_TO_IGNORE = [
     "lastUpdated",
     "lastLogin",
     "users",
+    "user",
 ];
