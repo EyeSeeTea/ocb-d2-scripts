@@ -3,18 +3,20 @@ import fs from "fs";
 import path from "path";
 import _ from "lodash";
 import { SocksProxyAgent } from "socks-proxy-agent";
-import { D2Api } from "../types/d2-api";
+import { D2Api, Auth } from "../types/d2-api";
 import { isElementOfUnion } from "utils/ts-utils";
+import { D2ApiOptions } from "@eyeseetea/d2-api/api/types";
 
 export function getD2Api(url: string): D2Api {
     const options = getApiOptionsFromUrl(url);
     return buildD2Api(options);
 }
 
-function buildD2Api(options: { baseUrl: string; auth: Auth }): D2Api {
+export function buildD2Api(options: Pick<D2ApiOptions, "backend" | "baseUrl" | "auth">): D2Api {
     const socksProxyUrl = process.env.ALL_PROXY;
+    console.debug(`Use proxy: ${socksProxyUrl ?? "no"}`);
     const agent = socksProxyUrl ? new SocksProxyAgent(socksProxyUrl) : undefined;
-    return new D2Api({ ...options, backend: "fetch", agent: agent });
+    return new D2Api({ ...options, agent: agent });
 }
 
 function getApiOptionsFromUrl(url: string): { baseUrl: string; auth: Auth } {
@@ -23,7 +25,6 @@ function getApiOptionsFromUrl(url: string): { baseUrl: string; auth: Auth } {
     const auth = { username: decode(urlObj.username), password: decode(urlObj.password) };
     return { baseUrl: urlObj.origin + urlObj.pathname, auth };
 }
-type Auth = { username: string; password: string };
 
 interface D2ApiArgs {
     url: string;
@@ -199,5 +200,5 @@ export const MetadataDate: Type<string, string> = {
 export const buildAuthFromString = (str: string): Auth => {
     const [username, password] = str.split(":");
     if (!username || !password) throw new Error(`Invalid pair: ${str} (expected USERNAME:PASSWORD)`);
-    return { username, password };
+    return { type: "basic", username: username, password: password };
 };

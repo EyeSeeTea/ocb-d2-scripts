@@ -1,7 +1,7 @@
 import { D2Api } from "../../../types/d2-api";
 import _ from "lodash";
 import { command, string, option, Type } from "cmd-ts";
-import { buildAuthFromString } from "scripts/common";
+import { buildAuthFromString, buildD2Api } from "scripts/common";
 import { MetadataD2Repository } from "data/MetadataD2Repository";
 import fs from "fs";
 import { SyncMetadataUseCase } from "domain/usecases/SyncMetadataUseCase";
@@ -102,7 +102,8 @@ async function getModelsToIgnoreFromCsv(csvPath: string): Async<string[]> {
 }
 
 function d2ApiFromServer(server: MetadataServer): D2Api {
-    return new D2Api({
+    return buildD2Api({
+        backend: "xhr",
         baseUrl: server.url,
         auth: server.auth
             ? buildAuthFromString(server.auth)

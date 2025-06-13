@@ -10,3 +10,5 @@ export type {
     D2TrackerEnrollmentToPost,
 } from "@eyeseetea/d2-api/api/trackerEnrollments";
 export type { TrackerEventsResponse, D2TrackerEventToPost } from "@eyeseetea/d2-api/api/trackerEvents";
+
+export type { Auth } from "@eyeseetea/d2-api/api/types";
