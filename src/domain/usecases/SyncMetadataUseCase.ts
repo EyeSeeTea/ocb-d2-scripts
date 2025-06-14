@@ -124,7 +124,6 @@ export class SyncMetadataUseCase {
             .filter(replicaObj => replicaObj.model === model)
             .filter(replicaObj => {
                 const replicaId = this.getIdByMetadataType(replicaObj);
-                // isUserModel(replicaObj) ? replicaObj.openId : replicaObj.id;
                 const mainObj = mainById[replicaId];
                 if (!mainObj) return false;
 
@@ -134,7 +133,6 @@ export class SyncMetadataUseCase {
             })
             .map(replicaObj => {
                 const replicaId = this.getIdByMetadataType(replicaObj);
-                // isUserModel(replicaObj) ? replicaObj.openId : replicaObj.id;
                 const mainObj = mainById[replicaId];
                 if (!mainObj) return undefined;
                 return {
@@ -236,7 +234,7 @@ export class SyncMetadataUseCase {
                 model: model,
                 page: page,
             });
-            allObjects.push(...objects.filter(obj => this.getIdByMetadataType(obj)));
+            allObjects.push(...objects);
 
             if (pager.page >= pager.pageCount) break;
         }

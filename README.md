@@ -51,7 +51,7 @@ Additional patterns can be found in the folder src/domain/entities/options (file
 ```shell
 yarn start options analyze \
     --url='http://localhost:8080' \
-    --auth='username:password' \
+    --auth='username:password or PAT token' \
     --services-path=services.csv \
     --projects-path=projects.csv \
     --exceptions-path=exceptions.csv \
@@ -95,7 +95,7 @@ Get a comparison between a main server and multiple replicas:
 -   Detect objects with the same ID but different codes to flag discrepancies.
 -   Detect objects with the same ID but different in any fields.
 
-\*For users `openId` is being used as `ID`
+\*For users `OIDC` is being used as `ID`
 
 ```shell
 yarn start metadata sync \
