@@ -14,6 +14,7 @@ type MetadataServer = {
     auth: string;
     personalToken: string;
     isMain: boolean;
+    useProxy: boolean;
 };
 
 const ModelsSeparatedByCommas: Type<string, string[]> = {
@@ -103,6 +104,7 @@ async function getModelsToIgnoreFromCsv(csvPath: string): Async<string[]> {
 
 function d2ApiFromServer(server: MetadataServer): D2Api {
     return buildD2Api({
+        useProxy: server.useProxy,
         backend: "xhr",
         baseUrl: server.url,
         auth: server.auth

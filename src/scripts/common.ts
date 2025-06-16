@@ -9,13 +9,16 @@ import { D2ApiOptions } from "@eyeseetea/d2-api/api/types";
 
 export function getD2Api(url: string): D2Api {
     const options = getApiOptionsFromUrl(url);
-    return buildD2Api(options);
+    return buildD2Api({ ...options, useProxy: false });
 }
 
-export function buildD2Api(options: Pick<D2ApiOptions, "backend" | "baseUrl" | "auth">): D2Api {
+export function buildD2Api(
+    options: Pick<D2ApiOptions, "backend" | "baseUrl" | "auth"> & { useProxy: boolean }
+): D2Api {
+    const { useProxy } = options;
     const socksProxyUrl = process.env.ALL_PROXY;
-    console.debug(`Use proxy: ${socksProxyUrl ?? "no"}`);
-    const agent = socksProxyUrl ? new SocksProxyAgent(socksProxyUrl) : undefined;
+    console.debug(`Use proxy: ${useProxy ?? "no"}`);
+    const agent = useProxy && socksProxyUrl ? new SocksProxyAgent(socksProxyUrl) : undefined;
     return new D2Api({ ...options, agent: agent });
 }
 
@@ -35,7 +38,7 @@ export function getD2ApiFromArgs(args: D2ApiArgs): D2Api {
     const { baseUrl, auth } = args.auth
         ? { baseUrl: args.url, auth: args.auth }
         : getApiOptionsFromUrl(args.url);
-    return buildD2Api({ baseUrl, auth });
+    return buildD2Api({ baseUrl, auth, useProxy: false });
 }
 
 export function getApiUrlOption(options?: { long: string }) {
