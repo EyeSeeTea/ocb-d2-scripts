@@ -15,9 +15,22 @@ import { Pager } from "domain/entities/Pager";
 import { Paginated } from "domain/entities/Pagination";
 import { Stats } from "domain/entities/Stats";
 import { ErrorResponseCodec, TypeReport } from "./ErrorMetadata";
+import { Instance } from "domain/entities/Instance";
+import { buildAuthFromString, buildD2Api } from "scripts/common";
 
 export class MetadataD2Repository implements MetadataRepository {
-    constructor(private api: D2Api) {}
+    private api: D2Api;
+
+    constructor(private instance: Instance) {
+        this.api = buildD2Api({
+            useProxy: this.instance.useProxy,
+            backend: "xhr",
+            baseUrl: this.instance.url,
+            auth: this.instance.auth
+                ? buildAuthFromString(this.instance.auth)
+                : { type: "personalToken", token: this.instance.personalToken },
+        });
+    }
 
     async getPaginated(options: {
         model: MetadataModel;

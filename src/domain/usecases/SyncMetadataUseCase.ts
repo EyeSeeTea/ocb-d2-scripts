@@ -47,7 +47,7 @@ export class SyncMetadataUseCase {
 
         const allStats = await promiseMap(this.metadataReplicaRepositories, async replicaRepository => {
             const replicaIndex = this.metadataReplicaRepositories.indexOf(replicaRepository);
-            logger.info("[Replica Server]: Create missing metadata...");
+            logger.info(`[Replica Server ${replicaIndex + 1}]: Create missing metadata...`);
             const metadataToSave = onlyMetadataData.flatMap(item => {
                 return item.map(item => item.object);
             });
@@ -76,8 +76,8 @@ export class SyncMetadataUseCase {
         });
 
         const allStats = await promiseMap(this.metadataReplicaRepositories, async replicaRepository => {
-            logger.info("[Replica Server]: Deleting orphan metadata...");
             const index = this.metadataReplicaRepositories.indexOf(replicaRepository);
+            logger.info(`[Replica Server ${index + 1}]: Deleting orphan metadata...`);
             const metadataToRemove = onlyReplicaMetadata.flatMap(item => {
                 return item
                     .filter(item => item.source.type === "replica" && index === item.source.index)

@@ -1,7 +1,5 @@
-import { D2Api } from "../../../types/d2-api";
 import _ from "lodash";
 import { command, string, option, Type, boolean, flag } from "cmd-ts";
-import { buildAuthFromString, buildD2Api } from "scripts/common";
 import { MetadataD2Repository } from "data/MetadataD2Repository";
 import fs from "fs";
 import {
@@ -12,14 +10,7 @@ import {
 import { SyncReport } from "./SyncReport";
 import CsvReadableStream from "csv-reader";
 import { Async } from "domain/entities/Async";
-
-type MetadataServer = {
-    url: string;
-    auth: string;
-    personalToken: string;
-    isMain: boolean;
-    useProxy: boolean;
-};
+import { Instance } from "domain/entities/Instance";
 
 const ModelsSeparatedByCommas: Type<string, string[]> = {
     async from(str) {
@@ -94,7 +85,7 @@ async function getModelsToCheck(ignoreModelsPath: string, modelsToCheck: string[
 
 function getRepositoriesFromJsonFile(jsonFilePath: string) {
     const serverContentFile = fs.readFileSync(jsonFilePath, "utf8");
-    const { servers } = JSON.parse(serverContentFile) as unknown as { servers: MetadataServer[] };
+    const { servers } = JSON.parse(serverContentFile) as unknown as { servers: Instance[] };
     const mainServers = servers.filter(server => server.isMain);
     const mainServer = mainServers[0];
     if (mainServers.length !== 1 || !mainServer)
@@ -103,10 +94,10 @@ function getRepositoriesFromJsonFile(jsonFilePath: string) {
         );
 
     return {
-        mainMetadataRepository: new MetadataD2Repository(d2ApiFromServer(mainServer)),
+        mainMetadataRepository: new MetadataD2Repository(mainServer),
         repositories: servers
             .filter(server => !server.isMain)
-            .map(server => new MetadataD2Repository(d2ApiFromServer(server))),
+            .map(server => new MetadataD2Repository(server)),
     };
 }
 
@@ -125,17 +116,6 @@ async function getModelsToIgnoreFromCsv(csvPath: string): Async<string[]> {
             })
             .on("end", () => resolve(allModels))
             .on("error", reject);
-    });
-}
-
-function d2ApiFromServer(server: MetadataServer): D2Api {
-    return buildD2Api({
-        useProxy: server.useProxy,
-        backend: "xhr",
-        baseUrl: server.url,
-        auth: server.auth
-            ? buildAuthFromString(server.auth)
-            : { type: "personalToken", token: server.personalToken },
     });
 }
 
