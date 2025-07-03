@@ -1,10 +1,14 @@
 import { D2Api } from "../../../types/d2-api";
 import _ from "lodash";
-import { command, string, option, Type } from "cmd-ts";
+import { command, string, option, Type, boolean, flag } from "cmd-ts";
 import { buildAuthFromString, buildD2Api } from "scripts/common";
 import { MetadataD2Repository } from "data/MetadataD2Repository";
 import fs from "fs";
-import { SyncMetadataUseCase } from "domain/usecases/SyncMetadataUseCase";
+import {
+    metadataActions,
+    MetadataActionType,
+    SyncMetadataUseCase,
+} from "domain/usecases/SyncMetadataUseCase";
 import { SyncReport } from "./SyncReport";
 import CsvReadableStream from "csv-reader";
 import { Async } from "domain/entities/Async";
@@ -48,18 +52,40 @@ export const syncMetadata = command({
             description: "Path to csv file with DHIS2 models to ignore (optional)",
             defaultValue: () => "",
         }),
+        action: option({
+            type: string,
+            long: "action",
+            description: "Action to perform (CREATE | CREATE_AND_UPDATE | DELETE)",
+            defaultValue: () => "",
+        }),
+        persist: flag({
+            type: boolean,
+            long: "persist",
+            description: "Persist changes to the server (true/false)",
+            defaultValue: () => false,
+        }),
     },
     handler: async args => {
+        const action = args.action ? validateAction(args.action) : undefined;
         const modelsToCheck = await getModelsToCheck(args.ignoreModelsPath, args.modelsToCheck);
         const metadataReposFromFile = getRepositoriesFromJsonFile(args.serverConfig);
+
         const report = await new SyncMetadataUseCase(
             metadataReposFromFile.mainMetadataRepository,
             metadataReposFromFile.repositories
-        ).execute({ modelsToCheck: modelsToCheck });
+        ).execute({ modelsToCheck: modelsToCheck, action: action, persist: args.persist });
 
-        new SyncReport().generateCsvReports(report);
+        new SyncReport().generateReports(report);
     },
 });
+
+function validateAction(action: string): MetadataActionType {
+    const currentAction = metadataActions.find(a => a.toLowerCase() === action.toLowerCase());
+    if (!currentAction) {
+        throw new Error(`Invalid action: ${action}. Valid actions are: ${metadataActions.join(", ")}`);
+    }
+    return currentAction;
+}
 
 async function getModelsToCheck(ignoreModelsPath: string, modelsToCheck: string[]): Promise<string[]> {
     const modelsToIgnore = ignoreModelsPath ? await getModelsToIgnoreFromCsv(ignoreModelsPath) : [];

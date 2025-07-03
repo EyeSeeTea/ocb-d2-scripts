@@ -3,6 +3,8 @@ import { CancelableResponse } from "@eyeseetea/d2-api/repositories/CancelableRes
 import _ from "lodash";
 import { MetadataResponse } from "../types/d2-api";
 import log from "utils/log";
+import { ErrorMessage } from "domain/entities/Stats";
+import { TypeReport } from "./ErrorMetadata";
 
 export function getErrorFromResponse(res: MetadataResponse): string {
     console.debug(JSON.stringify(res, null, 4));
@@ -14,6 +16,18 @@ export function getErrorFromResponse(res: MetadataResponse): string {
         .compact()
         .uniq()
         .join("\n");
+}
+
+export function getErrorMessagesFromReports(typeReports: TypeReport[]): ErrorMessage[] {
+    return _(typeReports || [])
+        .flatMap(typeReport => typeReport.objectReports || [])
+        .flatMap(objectReport => {
+            const allErrors = objectReport.errorReports.map((errorReport): ErrorMessage => {
+                return { id: objectReport.uid, message: errorReport.message };
+            });
+            return allErrors;
+        })
+        .value();
 }
 
 export async function runMetadata(
