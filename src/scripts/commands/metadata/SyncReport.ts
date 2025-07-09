@@ -73,10 +73,10 @@ export class SyncReport {
             syncResult.statsReport.saveStats
         );
 
-        writeFileSync(
-            `${rootFolderPath}/metadata_stats.json`,
-            JSON.stringify(syncResult.statsReport, null, 2)
-        );
+        this.writeJsonFile({
+            path: `${rootFolderPath}/metadata_stats.json`,
+            content: syncResult.statsReport,
+        });
     }
 
     private generateImportMetadataInDisk(
@@ -96,16 +96,13 @@ export class SyncReport {
 
         _(metadataObjectsByModelImport).forEach((objects, model) => {
             const fileName = `${importFolderPath}/${model}.json`;
-            writeFileSync(
-                fileName,
-                JSON.stringify({ [model]: objects.map(object => object.additionalFields) }, null, 2),
-                { encoding: "utf8" }
-            );
+            this.writeJsonFile({
+                path: fileName,
+                content: { [model]: objects.map(object => object.additionalFields) },
+            });
         });
 
-        writeFileSync(`${importFolderPath}/_import_stats.json`, JSON.stringify(stats, null, 2), {
-            encoding: "utf8",
-        });
+        this.writeJsonFile({ path: `${importFolderPath}/_import_stats.json`, content: stats });
     }
 
     private generateDeleteMetadataInDisk(
@@ -134,16 +131,13 @@ export class SyncReport {
 
         _(metadataObjectsByModel).forEach((objects, model) => {
             const fileName = `${removeFolderPath}/${model}.json`;
-            writeFileSync(
-                fileName,
-                JSON.stringify({ [model]: objects.map(object => ({ id: object.id })) }, null, 2),
-                { encoding: "utf8" }
-            );
+            this.writeJsonFile({
+                path: fileName,
+                content: { [model]: objects.map(object => ({ id: object.id })) },
+            });
         });
 
-        writeFileSync(`${removeFolderPath}/_delete_stats.json`, JSON.stringify(stats, null, 2), {
-            encoding: "utf8",
-        });
+        this.writeJsonFile({ path: `${removeFolderPath}/_delete_stats.json`, content: stats });
     }
 
     private generatePropertiesDiscrepanciesMetadataCsv(syncReport: SyncMetadataReport): string {
@@ -254,6 +248,7 @@ export class SyncReport {
             mkdirSync(dirPath, { recursive: true });
         } catch (error) {
             logger.error(`Error creating folder: ${JSON.stringify(error, null, 2)}`);
+            throw error;
         }
     }
 
@@ -269,5 +264,12 @@ export class SyncReport {
         const seconds = pad(now.getSeconds());
 
         return `${day}_${month}_${year}_${hours}_${minutes}_${seconds}`;
+    }
+
+    private writeJsonFile(options: { path: string; content: unknown }): void {
+        const { path, content } = options;
+        writeFileSync(path, JSON.stringify(content, null, 2), {
+            encoding: "utf8",
+        });
     }
 }

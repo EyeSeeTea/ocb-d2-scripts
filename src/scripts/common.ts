@@ -19,6 +19,9 @@ export function buildD2Api(
     const socksProxyUrl = process.env.ALL_PROXY;
     console.debug(`Use proxy: ${useProxy ?? "no"}`);
     const agent = useProxy && socksProxyUrl ? new SocksProxyAgent(socksProxyUrl) : undefined;
+    if (useProxy && !agent) {
+        throw new Error("Proxy not configured.");
+    }
     return new D2Api({ ...options, agent: agent });
 }
 

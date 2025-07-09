@@ -38,7 +38,7 @@ export class SyncMetadataUseCase {
         exclusiveMetadata: MetadataValidationResult[],
         options: UseCaseOptions
     ): Async<StatsWithReplica[]> {
-        const { action } = options;
+        const { action, persist } = options;
         if (action !== "CREATE" && action !== "CREATE_AND_UPDATE") return [];
 
         const onlyMetadataData = exclusiveMetadata.map(result => {
@@ -56,7 +56,7 @@ export class SyncMetadataUseCase {
 
             const stats = await replicaRepository.save(metadataToSave, {
                 action: action,
-                persist: options.persist,
+                persist: persist,
             });
             logger.info("[Replica Server]: Create process finished");
             return stats.map(stat => ({ ...stat, replicaIndex: replicaIndex }));
@@ -86,9 +86,9 @@ export class SyncMetadataUseCase {
 
             if (metadataToRemove.length === 0) return [];
 
-            const stats = await replicaRepository.remove(metadataToRemove, {
+            const stats = await replicaRepository.delete(metadataToRemove, {
                 action: "DELETE",
-                persist: true,
+                persist: options.persist,
             });
             logger.info("[Replica Server]: Delete process finished");
             return stats.map(stat => ({ ...stat, replicaIndex: index }));
@@ -326,7 +326,7 @@ export class SyncMetadataUseCase {
 }
 
 type UseCaseOptions = {
-    modelsToCheck: string[];
+    modelsToCheck: MetadataModel[];
     action: Maybe<MetadataActionType>;
     persist: boolean;
 };

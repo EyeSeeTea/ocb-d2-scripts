@@ -1,10 +1,11 @@
 import _ from "lodash";
-import { D2Api, PostOptions } from "../types/d2-api";
+import { Auth, D2Api, PostOptions } from "../types/d2-api";
 import { Async } from "domain/entities/Async";
 import { Id } from "domain/entities/Base";
 import { MetadataRepository, SaveMetadataOptions } from "domain/repositories/MetadataRepository";
 import { getErrorMessagesFromReports, getPluralModel } from "./dhis2-utils";
 import {
+    getMetadataModelFromString,
     MetadataModel,
     MetadataObject,
     MetadataObjectWithType,
@@ -20,6 +21,7 @@ import { buildAuthFromString, buildD2Api } from "scripts/common";
 
 export class MetadataD2Repository implements MetadataRepository {
     private api: D2Api;
+    private excludeModels: MetadataModel[] = ["documents"];
 
     constructor(private instance: Instance) {
         this.api = buildD2Api({
@@ -94,13 +96,11 @@ export class MetadataD2Repository implements MetadataRepository {
         const { action, persist } = options;
         if (metadataObjects.length === 0) return Promise.resolve([]);
 
-        const excludeModels = ["documents"];
-
-        const metadataModels = metadataObjects.filter(object => !excludeModels.includes(object.model));
+        const metadataModels = metadataObjects.filter(object => !this.excludeModels.includes(object.model));
 
         const metadataToSave = _(metadataModels)
             .groupBy(obj => obj.model)
-            .mapValues(objects => objects.map(obj => ({ ...obj.additionalFields })))
+            .mapValues(objects => objects.map(obj => obj.additionalFields))
             .value();
 
         try {
@@ -119,7 +119,7 @@ export class MetadataD2Repository implements MetadataRepository {
         }
     }
 
-    async remove(metadataObjects: MetadataObjectWithType[], options: SaveMetadataOptions): Async<Stats[]> {
+    async delete(metadataObjects: MetadataObjectWithType[], options: SaveMetadataOptions): Async<Stats[]> {
         const { persist } = options;
         const metadataObjectsByModel = _(metadataObjects)
             .groupBy(obj => obj.model)
@@ -161,10 +161,12 @@ export class MetadataD2Repository implements MetadataRepository {
             .groupBy(report => report.klass)
             .flatMap(reports => {
                 return reports.map(report => {
+                    const modelName = _(report.klass).split(".").last() ?? "";
+                    const model = getMetadataModelFromString(modelName);
                     return new Stats({
                         ...report.stats,
                         errorMessages: getErrorMessagesFromReports([report]),
-                        model: _(report.klass).split(".").last(),
+                        model: model,
                     });
                 });
             })

@@ -6,7 +6,7 @@ import { MetadataActionType } from "domain/usecases/SyncMetadataUseCase";
 
 export interface MetadataRepository {
     getPaginated(options: { model: MetadataModel; page: number }): Async<Paginated<MetadataObjectWithType>>;
-    remove(metadataObjects: MetadataObjectWithType[], options: SaveMetadataOptions): Async<Stats[]>;
+    delete(metadataObjects: MetadataObjectWithType[], options: SaveMetadataOptions): Async<Stats[]>;
     save(metadataObjects: MetadataObjectWithType[], options: SaveMetadataOptions): Async<Stats[]>;
 }
 
