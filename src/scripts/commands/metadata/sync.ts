@@ -45,9 +45,9 @@ export const syncMetadata = command({
             defaultValue: () => "",
         }),
         action: option({
-            type: optional(oneOf(["CREATE", "CREATE_AND_UPDATE", "DELETE"])),
+            type: optional(oneOf(["CREATE", "CREATE_AND_UPDATE", "DELETE", "DELETE_WITH_DATA"])),
             long: "action",
-            description: "Action to perform (CREATE | CREATE_AND_UPDATE | DELETE)",
+            description: "Action to perform (CREATE | CREATE_AND_UPDATE | DELETE | DELETE_WITH_DATA )",
         }),
         persist: flag({
             long: "persist",

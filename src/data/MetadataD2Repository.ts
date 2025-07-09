@@ -1,9 +1,9 @@
 import _ from "lodash";
-import { Auth, D2Api, PostOptions } from "../types/d2-api";
+import { D2Api, PostOptions } from "../types/d2-api";
 import { Async } from "domain/entities/Async";
-import { Id } from "domain/entities/Base";
+import { Id, Ref } from "domain/entities/Base";
 import { MetadataRepository, SaveMetadataOptions } from "domain/repositories/MetadataRepository";
-import { getErrorMessagesFromReports, getPluralModel } from "./dhis2-utils";
+import { getErrorMessagesFromReports, getInChunks, getPluralModel, promiseMap } from "./dhis2-utils";
 import {
     getMetadataModelFromString,
     MetadataModel,
@@ -18,6 +18,7 @@ import { Stats } from "domain/entities/Stats";
 import { ErrorResponseCodec, TypeReport } from "./ErrorMetadata";
 import { Instance } from "domain/entities/Instance";
 import { buildAuthFromString, buildD2Api } from "scripts/common";
+import { D2TrackerEvent } from "@eyeseetea/d2-api/api/trackerEvents";
 
 export class MetadataD2Repository implements MetadataRepository {
     private api: D2Api;
@@ -107,7 +108,7 @@ export class MetadataD2Repository implements MetadataRepository {
             const response = await this.api.metadata
                 .postAsync(metadataToSave, {
                     importMode: this.getImportMode(persist),
-                    importStrategy: action,
+                    importStrategy: this.getStrategyFromAction(action),
                 })
                 .getData();
 
@@ -126,6 +127,18 @@ export class MetadataD2Repository implements MetadataRepository {
             .mapValues(objects => objects.map(obj => ({ id: obj.id })))
             .value();
 
+        if (options.action === "DELETE_WITH_DATA") {
+            const dataElementsWithDomain = await this.getDataElementByIds(metadataObjects);
+            await this.deleteDataValuesFromDataElements(
+                dataElementsWithDomain.filter(dataElement => dataElement.domainType === "AGGREGATE"),
+                !options.persist
+            );
+            await this.deleteTrackerEventsFromDataElements(
+                dataElementsWithDomain.filter(dataElement => dataElement.domainType === "TRACKER"),
+                persist
+            );
+        }
+
         try {
             const response = await this.api.metadata
                 .postAsync(metadataObjectsByModel, {
@@ -139,6 +152,179 @@ export class MetadataD2Repository implements MetadataRepository {
             return this.buildStatsFromResponse(results?.typeReports ?? []);
         } catch (error) {
             return this.buildStatsFromError(error);
+        }
+    }
+
+    private async deleteDataValuesFromDataElements(
+        dataElements: D2ApiDataElement[],
+        dryRun: boolean
+    ): Promise<void> {
+        const d2OrgUnitResponse = await this.getRootOrgUnit();
+
+        await promiseMap(dataElements, async dataElement => {
+            console.debug(`Fetching data values for dataElement ${dataElement.id}`);
+            const { dataValues } = await this.api.dataValues
+                .getSet({
+                    dataElement: [dataElement.id],
+                    orgUnit: [d2OrgUnitResponse.id],
+                    startDate: "1950",
+                    endDate: "2100",
+                    children: true,
+                    dataSet: [],
+                })
+                .getData();
+
+            if (dataValues.length === 0) {
+                console.warn(`No data values found for data element ${dataElement.id}`);
+                return [];
+            }
+
+            console.debug(`Deleting ${dataValues.length} dataValues for dataElement ${dataElement.id}`);
+
+            const jobResponse = await this.api.dataValues
+                .postSetAsync({ importStrategy: "DELETE", dryRun: dryRun }, { dataValues: dataValues })
+                .getData();
+
+            const dvResponse = await this.api.system
+                .waitFor(jobResponse.response.jobType, jobResponse.response.id)
+                .getData();
+
+            console.debug(
+                `Data values response for ${dataElement.id}:`,
+                JSON.stringify(dvResponse?.importCount, null, 2)
+            );
+        });
+
+        console.debug("Finished deleting data values for data elements.");
+    }
+
+    private getDataElementByIds(models: MetadataObjectWithType[]): Promise<D2ApiDataElement[]> {
+        const dataElements = models.filter(model => model.model === "dataElements");
+        if (dataElements.length === 0) return Promise.resolve([]);
+
+        return getInChunks(dataElements, dataElements => {
+            return this.api.models.dataElements
+                .get({
+                    fields: { id: true, domainType: true },
+                    filter: { id: { in: dataElements.map(de => de.id) } },
+                    paging: false,
+                    pageSize: 300,
+                })
+                .getData()
+                .then(response => response.objects);
+        });
+    }
+
+    private async deleteTrackerEventsFromDataElements(
+        dataElements: D2ApiDataElement[],
+        persist: boolean
+    ): Promise<void> {
+        if (dataElements.length === 0) return;
+
+        await promiseMap(dataElements, async dataElement => {
+            const trackerEvents = await this.getAllEvents({
+                dataElementId: dataElement.id,
+                initialPage: 1,
+                events: [],
+            });
+
+            const eventsToUpdate = trackerEvents.filter(event => {
+                return event.dataValues.some(dv => dv.dataElement === dataElement.id);
+            });
+
+            if (eventsToUpdate.length === 0) {
+                console.warn(`No tracker events found for data element ${dataElement.id}`);
+                return [];
+            }
+
+            console.debug(
+                `Updating ${eventsToUpdate.length} tracker events for dataElement ${dataElement.id}`
+            );
+
+            const jobResponse = await this.api.tracker
+                .postAsync(
+                    { importMode: this.getImportMode(persist), importStrategy: "UPDATE" },
+                    { events: eventsToUpdate }
+                )
+                .getData();
+
+            const trackerResponse = await this.api.system
+                .waitFor(jobResponse.response.jobType, jobResponse.response.id)
+                .getData();
+
+            console.debug(
+                `Tracker response for ${dataElement.id}:`,
+                JSON.stringify(trackerResponse?.stats, null, 2)
+            );
+        });
+
+        console.debug("Finished updating tracker events for data elements.");
+    }
+
+    private async getAllEvents(options: {
+        dataElementId: Id;
+        initialPage: number;
+        events: D2TrackerEvent[];
+    }): Promise<D2TrackerEvent[]> {
+        const { dataElementId, initialPage, events } = options;
+        console.debug(`Fetching tracker events for dataElement ${dataElementId} on page ${initialPage}`);
+        const { instances, page, pageCount } = await this.getEventsByDataElement({
+            dataElementId,
+            page: initialPage,
+        });
+
+        const acumInstances = [...events, ...instances];
+
+        if (page >= (pageCount ?? 0)) {
+            return acumInstances;
+        } else {
+            return this.getAllEvents({ dataElementId, initialPage: initialPage + 1, events: acumInstances });
+        }
+    }
+
+    private async getEventsByDataElement(options: { dataElementId: Id; page: number }) {
+        const { dataElementId, page } = options;
+        return this.api.tracker.events
+            .get({
+                // from 2.41 documentation https://docs.dhis2.org/en/develop/using-the-api/dhis-core-version-241/tracker.html#events-get-apitrackerevents
+                // "A filter like filter=fazCI2ygYkq returns all events where the given data element has a value."
+                // this is not supported in previous version so no alternative but go through all pages
+                filter: dataElementId,
+                // using $all here because $owner returns an empty object
+                fields: { $all: true },
+                page: page,
+                pageSize: 100_000,
+                totalPages: true,
+            })
+            .getData();
+    }
+
+    private async getRootOrgUnit(): Promise<Ref> {
+        const d2OrgUnitResponse = await this.api.models.organisationUnits
+            .get({ fields: { id: true }, filter: { level: { eq: "1" } }, paging: false })
+            .getData();
+
+        const globalOrgUnitId = d2OrgUnitResponse.objects[0]?.id;
+
+        if (!globalOrgUnitId) {
+            throw new Error("No global organisation unit found");
+        }
+
+        return { id: globalOrgUnitId };
+    }
+
+    private getStrategyFromAction(action: SaveMetadataOptions["action"]): PostOptions["importStrategy"] {
+        switch (action) {
+            case "CREATE":
+                return "CREATE";
+            case "CREATE_AND_UPDATE":
+                return "CREATE_AND_UPDATE";
+            case "DELETE":
+                return "DELETE";
+            case "DELETE_WITH_DATA":
+                return "DELETE";
+            default:
+                throw new Error(`Unknown action: ${action}`);
         }
     }
 
@@ -190,3 +376,5 @@ interface D2User {
     openId: string;
     userCredentials: { username: string };
 }
+
+type D2ApiDataElement = { id: Id; domainType: "TRACKER" | "AGGREGATE" };

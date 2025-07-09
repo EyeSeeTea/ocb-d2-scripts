@@ -69,7 +69,8 @@ export class SyncMetadataUseCase {
         exclusiveMetadata: MetadataValidationResult[],
         options: UseCaseOptions
     ): Async<StatsWithReplica[]> {
-        if (options.action !== "DELETE") return [];
+        const { action, persist } = options;
+        if (action !== "DELETE" && action !== "DELETE_WITH_DATA") return [];
 
         const onlyReplicaMetadata = exclusiveMetadata.map(result => {
             return result.exclusive.filter(item => item.source.type === "replica");
@@ -87,8 +88,8 @@ export class SyncMetadataUseCase {
             if (metadataToRemove.length === 0) return [];
 
             const stats = await replicaRepository.delete(metadataToRemove, {
-                action: "DELETE",
-                persist: options.persist,
+                action: action,
+                persist: persist,
             });
             logger.info("[Replica Server]: Delete process finished");
             return stats.map(stat => ({ ...stat, replicaIndex: index }));
@@ -346,5 +347,5 @@ export type StatsReport = {
 
 export type SyncResult = { statsReport: StatsReport; syncMetadataReport: SyncMetadataReport };
 
-export const metadataActions = ["CREATE", "CREATE_AND_UPDATE", "DELETE"] as const;
+export const metadataActions = ["CREATE", "CREATE_AND_UPDATE", "DELETE", "DELETE_WITH_DATA"] as const;
 export type MetadataActionType = typeof metadataActions[number];
