@@ -288,8 +288,8 @@ export class MetadataD2Repository implements MetadataRepository {
             .get({
                 // from 2.41 documentation https://docs.dhis2.org/en/develop/using-the-api/dhis-core-version-241/tracker.html#events-get-apitrackerevents
                 // "A filter like filter=fazCI2ygYkq returns all events where the given data element has a value."
-                // this is not supported in previous version so no alternative but go through all pages
-                filter: dataElementId,
+                // this is not supported in previous versions so using a weird value to avoid going through all events
+                filter: `${dataElementId}:ne:_____UNEXISTING_VALUE____`,
                 // using $all here because $owner returns an empty object
                 fields: { $all: true },
                 page: page,
