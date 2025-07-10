@@ -77,7 +77,6 @@ export const analyzeOptionsCmd = command({
                 csvUnknownPath: args.unknownReportPath,
                 validationResponse: optionSetValidations,
             });
-            process.exit(1);
         } else {
             logger.info("No invalid options found");
         }
