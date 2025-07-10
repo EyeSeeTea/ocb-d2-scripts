@@ -160,6 +160,8 @@ export class MetadataD2Repository implements MetadataRepository {
         dryRun: boolean
     ): Promise<void> {
         const d2OrgUnitResponse = await this.getRootOrgUnit();
+        const currentYear = new Date().getFullYear();
+        const endDate = (currentYear + 50).toString();
 
         await promiseMap(dataElements, async dataElement => {
             console.debug(`Fetching data values for dataElement ${dataElement.id}`);
@@ -168,7 +170,7 @@ export class MetadataD2Repository implements MetadataRepository {
                     dataElement: [dataElement.id],
                     orgUnit: [d2OrgUnitResponse.id],
                     startDate: "1950",
-                    endDate: "2100",
+                    endDate: endDate,
                     children: true,
                     dataSet: [],
                 })
@@ -293,7 +295,7 @@ export class MetadataD2Repository implements MetadataRepository {
                 // using $all here because $owner returns an empty object
                 fields: { $all: true },
                 page: page,
-                pageSize: 100_000,
+                pageSize: 300,
                 totalPages: true,
             })
             .getData();
