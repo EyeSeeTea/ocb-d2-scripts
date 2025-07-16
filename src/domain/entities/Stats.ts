@@ -1,52 +1,56 @@
+import { Maybe } from "utils/ts-utils";
 import { Id } from "./Base";
+import { MetadataModel } from "./MetadataObject";
 
 type StatsAttrs = {
-    recordsSkipped: Id[];
-    errorMessage: string;
+    errorMessages: ErrorMessage[];
     created: number;
     ignored: number;
     updated: number;
     deleted: number;
     total: number;
+    model: Maybe<MetadataModel>;
 };
 
+export type ErrorMessage = { message: string; id: Id };
+
 export class Stats {
-    public readonly recordsSkipped: Id[];
-    public readonly errorMessage: string;
+    public readonly errorMessages: ErrorMessage[];
     public readonly created: number;
     public readonly ignored: number;
     public readonly updated: number;
     public readonly deleted: number;
     public readonly total: number;
+    public readonly model: Maybe<string>;
 
     constructor(attrs: StatsAttrs) {
-        this.recordsSkipped = attrs.recordsSkipped;
         this.created = attrs.created;
         this.ignored = attrs.ignored;
         this.updated = attrs.updated;
         this.deleted = attrs.deleted;
-        this.errorMessage = attrs.errorMessage;
+        this.errorMessages = attrs.errorMessages;
         this.total = attrs.total;
+        this.model = attrs.model;
     }
 
     static combine(stats: Stats[]): Stats {
         return stats.reduce((acum, stat) => {
             return {
-                recordsSkipped: [...acum.recordsSkipped, ...stat.recordsSkipped],
-                errorMessage: `${acum.errorMessage}${stat.errorMessage}`,
+                errorMessages: [...acum.errorMessages, ...stat.errorMessages],
                 created: acum.created + stat.created,
                 ignored: acum.ignored + stat.ignored,
                 updated: acum.updated + stat.updated,
                 deleted: acum.deleted + stat.deleted,
                 total: acum.total + stat.total,
+                model: stat.model,
             };
         }, Stats.empty());
     }
 
     static empty(): Stats {
         return {
-            recordsSkipped: [],
-            errorMessage: "",
+            model: undefined,
+            errorMessages: [],
             created: 0,
             ignored: 0,
             updated: 0,

@@ -69,8 +69,6 @@ export class OptionSetValidatorReport {
                 .groupBy(error => error.id)
                 .value();
 
-            // const errorsById = _.groupBy(optionErrors, "id");
-
             const optionSetUniqueError = _(optionSetErrorsById)
                 .flatMap(groupedErrors => {
                     return optionStringifier.stringifyRecords([
@@ -96,25 +94,6 @@ export class OptionSetValidatorReport {
                 .value();
 
             return [...optionSetUniqueError, ...optionUniqueError].join("");
-            // const allErrors = errors.map(error => {
-            //     const row = optionStringifier.stringifyRecords([
-            //         [
-            //             error.type,
-            //             optionSet.category,
-            //             optionSet.id,
-            //             optionSet.code ?? "",
-            //             optionSet.name,
-            //             error.type === "option" ? error.id : "",
-            //             error.type === "option" ? error.code : "",
-            //             error.type === "option" ? error.name : "",
-            //             error.property,
-            //             error.rule,
-            //             error.fixedValue,
-            //         ],
-            //     ]);
-            //     return row;
-            // });
-            // return allErrors.join("");
         });
 
         return [header, ...rows].join("");

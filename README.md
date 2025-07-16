@@ -101,11 +101,15 @@ Get a comparison between a main server and multiple replicas:
 yarn start metadata sync \
 --check-models=users,indicators \
 --ignore-models=ignore-models.csv \ # metadata you want to exclude
---server-config=servers_msf.json
+--server-config=servers_msf.json \
+--action=DELETE \
+--persist
 ```
 
 -   check-models: any valid DHIS2 metadata. Check the `getAllMetadataModels` function in the `sync.ts` file for the complete list
--   ignore-models: a csv file with the models you want to ignore:
+-   ignore-models: a csv file with the models you want to ignore
+-   action: action to perform on metadata: CREATE, CREATE_AND_UPDATE, DELETE and DELETE_WITH_DATA. Metadata is **always** generated to disk even if no action is provided. DELETE_WITH_DATA is only supported for dataElements (aggregate/trackers)
+-   persist: persist changes to the server. false if omitted
 
 ```csv
 users

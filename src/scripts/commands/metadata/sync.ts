@@ -1,24 +1,21 @@
-import { D2Api } from "../../../types/d2-api";
 import _ from "lodash";
-import { command, string, option, Type } from "cmd-ts";
-import { buildAuthFromString, buildD2Api } from "scripts/common";
+import { command, string, option, Type, flag, optional, oneOf } from "cmd-ts";
 import { MetadataD2Repository } from "data/MetadataD2Repository";
 import fs from "fs";
 import { SyncMetadataUseCase } from "domain/usecases/SyncMetadataUseCase";
 import { SyncReport } from "./SyncReport";
 import CsvReadableStream from "csv-reader";
 import { Async } from "domain/entities/Async";
-
-type MetadataServer = {
-    url: string;
-    auth: string;
-    personalToken: string;
-    isMain: boolean;
-};
+import { Instance } from "domain/entities/Instance";
+import {
+    allowedMetadataModels,
+    getMetadataModelFromString,
+    MetadataModel,
+} from "domain/entities/MetadataObject";
 
 const ModelsSeparatedByCommas: Type<string, string[]> = {
     async from(str) {
-        if (str === "all") return getAllMetadataModels();
+        if (str === "all") return getAllMetadataModelsString();
 
         const values = _.compact(str.split(","));
         if (_(values).isEmpty()) throw new Error("Value cannot be empty");
@@ -47,27 +44,46 @@ export const syncMetadata = command({
             description: "Path to csv file with DHIS2 models to ignore (optional)",
             defaultValue: () => "",
         }),
+        action: option({
+            type: optional(oneOf(["CREATE", "CREATE_AND_UPDATE", "DELETE", "DELETE_WITH_DATA"])),
+            long: "action",
+            description: "Action to perform (CREATE | CREATE_AND_UPDATE | DELETE | DELETE_WITH_DATA )",
+        }),
+        persist: flag({
+            long: "persist",
+            description: "Persist changes to the server.",
+        }),
     },
     handler: async args => {
         const modelsToCheck = await getModelsToCheck(args.ignoreModelsPath, args.modelsToCheck);
         const metadataReposFromFile = getRepositoriesFromJsonFile(args.serverConfig);
+
         const report = await new SyncMetadataUseCase(
             metadataReposFromFile.mainMetadataRepository,
             metadataReposFromFile.repositories
-        ).execute({ modelsToCheck: modelsToCheck });
+        ).execute({ modelsToCheck: modelsToCheck, action: args.action, persist: args.persist });
 
-        new SyncReport().generateCsvReports(report);
+        new SyncReport().generateReports(report);
     },
 });
 
-async function getModelsToCheck(ignoreModelsPath: string, modelsToCheck: string[]): Promise<string[]> {
+async function getModelsToCheck(ignoreModelsPath: string, modelsToCheck: string[]): Promise<MetadataModel[]> {
     const modelsToIgnore = ignoreModelsPath ? await getModelsToIgnoreFromCsv(ignoreModelsPath) : [];
-    return _.difference(modelsToCheck, modelsToIgnore);
+    const models = _.difference(modelsToCheck, modelsToIgnore);
+
+    return _(models)
+        .map(model => {
+            return getMetadataModelFromString(model);
+        })
+        .compact()
+        .value();
 }
 
 function getRepositoriesFromJsonFile(jsonFilePath: string) {
     const serverContentFile = fs.readFileSync(jsonFilePath, "utf8");
-    const { servers } = JSON.parse(serverContentFile) as unknown as { servers: MetadataServer[] };
+    const { servers } = JSON.parse(serverContentFile) as unknown as {
+        servers: Instance[];
+    };
     const mainServers = servers.filter(server => server.isMain);
     const mainServer = mainServers[0];
     if (mainServers.length !== 1 || !mainServer)
@@ -76,10 +92,10 @@ function getRepositoriesFromJsonFile(jsonFilePath: string) {
         );
 
     return {
-        mainMetadataRepository: new MetadataD2Repository(d2ApiFromServer(mainServer)),
+        mainMetadataRepository: new MetadataD2Repository(mainServer),
         repositories: servers
             .filter(server => !server.isMain)
-            .map(server => new MetadataD2Repository(d2ApiFromServer(server))),
+            .map(server => new MetadataD2Repository(server)),
     };
 }
 
@@ -101,70 +117,6 @@ async function getModelsToIgnoreFromCsv(csvPath: string): Async<string[]> {
     });
 }
 
-function d2ApiFromServer(server: MetadataServer): D2Api {
-    return buildD2Api({
-        backend: "xhr",
-        baseUrl: server.url,
-        auth: server.auth
-            ? buildAuthFromString(server.auth)
-            : { type: "personalToken", token: server.personalToken },
-    });
-}
-
-function getAllMetadataModels(): string[] {
-    return [
-        "attributes",
-        "categories",
-        "categoryCombos",
-        "categoryOptionCombos",
-        "categoryOptionGroupSets",
-        "categoryOptionGroups",
-        "categoryOptions",
-        "constants",
-        "dashboardItems",
-        "dashboards",
-        "dataApprovalLevels",
-        "dataApprovalWorkflows",
-        "dataElementGroupSets",
-        "dataElementGroups",
-        "dataElements",
-        "dataSets",
-        "documents",
-        "eventVisualizations",
-        "indicatorGroupSets",
-        "indicatorGroups",
-        "indicatorTypes",
-        "indicators",
-        "legendSets",
-        "mapViews",
-        "maps",
-        "optionGroupSets",
-        "optionGroups",
-        "optionSets",
-        "options",
-        "organisationUnitGroupSets",
-        "organisationUnitGroups",
-        "organisationUnitLevels",
-        "organisationUnits",
-        "programIndicatorGroups",
-        "programIndicators",
-        "programRuleActions",
-        "programRuleVariables",
-        "programRules",
-        "programSections",
-        "programStageSections",
-        "programStages",
-        "programs",
-        "relationshipTypes",
-        "sections",
-        "sqlViews",
-        "trackedEntityAttributes",
-        "trackedEntityTypes",
-        "userGroups",
-        "userRoles",
-        "users",
-        "validationRuleGroups",
-        "validationRules",
-        "visualizations",
-    ];
+function getAllMetadataModelsString(): string[] {
+    return allowedMetadataModels.map(model => model);
 }

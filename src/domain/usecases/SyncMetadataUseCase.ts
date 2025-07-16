@@ -13,6 +13,7 @@ import {
 } from "domain/entities/MetadataValidationResult";
 import logger from "utils/log";
 import { promiseMap } from "data/dhis2-utils";
+import { Stats } from "domain/entities/Stats";
 
 export class SyncMetadataUseCase {
     constructor(
@@ -20,12 +21,85 @@ export class SyncMetadataUseCase {
         private metadataReplicaRepositories: MetadataRepository[]
     ) {}
 
-    async execute(options: UseCaseOptions): Async<SyncMetadataReport> {
+    async execute(options: UseCaseOptions): Async<SyncResult> {
         const { modelsToCheck } = options;
-        return this.validateMetadataByModel(modelsToCheck);
+        const syncReport = await this.validateMetadataByModel(modelsToCheck);
+
+        const deleteStats = await this.removeOrphanMetadataInReplicas(syncReport.exclusiveMetadata, options);
+        const createStats = await this.saveMissingMetadataInReplicas(syncReport.exclusiveMetadata, options);
+
+        return {
+            syncMetadataReport: syncReport,
+            statsReport: { saveStats: createStats, deleteStats: deleteStats },
+        };
+    }
+
+    private async saveMissingMetadataInReplicas(
+        exclusiveMetadata: MetadataValidationResult[],
+        options: UseCaseOptions
+    ): Async<StatsWithReplica[]> {
+        const { action, persist } = options;
+        if (action !== "CREATE" && action !== "CREATE_AND_UPDATE") return [];
+
+        const onlyMetadataData = exclusiveMetadata.map(result => {
+            return result.exclusive.filter(item => item.source.type === "main");
+        });
+
+        const allStats = await promiseMap(this.metadataReplicaRepositories, async replicaRepository => {
+            const replicaIndex = this.metadataReplicaRepositories.indexOf(replicaRepository);
+            logger.info(`[Replica Server ${replicaIndex + 1}]: Create missing metadata...`);
+            const metadataToSave = onlyMetadataData.flatMap(item => {
+                return item.map(item => item.object);
+            });
+
+            if (metadataToSave.length === 0) return [];
+
+            const stats = await replicaRepository.save(metadataToSave, {
+                action: action,
+                persist: persist,
+            });
+            logger.info("[Replica Server]: Create process finished");
+            return stats.map(stat => ({ ...stat, replicaIndex: replicaIndex }));
+        });
+
+        return allStats.flat();
+    }
+
+    private async removeOrphanMetadataInReplicas(
+        exclusiveMetadata: MetadataValidationResult[],
+        options: UseCaseOptions
+    ): Async<StatsWithReplica[]> {
+        const { action, persist } = options;
+        if (action !== "DELETE" && action !== "DELETE_WITH_DATA") return [];
+
+        const onlyReplicaMetadata = exclusiveMetadata.map(result => {
+            return result.exclusive.filter(item => item.source.type === "replica");
+        });
+
+        const allStats = await promiseMap(this.metadataReplicaRepositories, async replicaRepository => {
+            const index = this.metadataReplicaRepositories.indexOf(replicaRepository);
+            logger.info(`[Replica Server ${index + 1}]: Deleting orphan metadata...`);
+            const metadataToRemove = onlyReplicaMetadata.flatMap(item => {
+                return item
+                    .filter(item => item.source.type === "replica" && index === item.source.index)
+                    .map(item => item.object);
+            });
+
+            if (metadataToRemove.length === 0) return [];
+
+            const stats = await replicaRepository.delete(metadataToRemove, {
+                action: action,
+                persist: persist,
+            });
+            logger.info("[Replica Server]: Delete process finished");
+            return stats.map(stat => ({ ...stat, replicaIndex: index }));
+        });
+
+        return allStats.flat();
     }
 
     private async validateMetadataByModel(modelsToCheck: MetadataModel[]): Async<SyncMetadataReport> {
+        const totalReplicas = this.metadataReplicaRepositories.length;
         const resultByModel = await promiseMap(modelsToCheck, async model => {
             logger.info(`[Main Server]: Fetching metadata for model: ${model}`);
             const mainObjects = await this.getObjects({ model, server: this.metadataRepositoryMain });
@@ -37,7 +111,11 @@ export class SyncMetadataUseCase {
                 )
             );
 
-            const exclusiveMetadata = this.findExclusiveMetadataWithSource(mainObjects, replicaObjects);
+            const exclusiveMetadata = this.findExclusiveMetadataWithSource(
+                mainObjects,
+                replicaObjects,
+                totalReplicas
+            );
 
             const metadataWithCodeDiscrepancies = this.findCodeDiscrepanciesForModel(
                 model,
@@ -79,7 +157,8 @@ export class SyncMetadataUseCase {
     */
     private findExclusiveMetadataWithSource(
         main: MetadataObjectWithType[],
-        replicas: MetadataObjectWithType[][]
+        replicas: MetadataObjectWithType[][],
+        totalReplicas: number
     ): ExclusiveMetadataItem[] {
         const metadataWithSource = [
             ...main.map(
@@ -101,7 +180,7 @@ export class SyncMetadataUseCase {
         const metadataGroupedById = _.groupBy(metadataWithSource, item =>
             this.getIdByMetadataType(item.object)
         );
-        const exclusiveMetadata = _.pickBy(metadataGroupedById, group => group.length === 1);
+        const exclusiveMetadata = _.pickBy(metadataGroupedById, group => group.length !== totalReplicas + 1);
 
         return _(exclusiveMetadata)
             .map(group => group[0])
@@ -247,10 +326,26 @@ export class SyncMetadataUseCase {
     }
 }
 
-type UseCaseOptions = { modelsToCheck: string[] };
+type UseCaseOptions = {
+    modelsToCheck: MetadataModel[];
+    action: Maybe<MetadataActionType>;
+    persist: boolean;
+};
 
 export type SyncMetadataReport = {
     exclusiveMetadata: MetadataValidationResult[];
     metadataWithCodeDiscrepancies: DiscrepancyValidationResult[];
     metadataWithPropertiesDiscrepancies: DiscrepancyValidationResult[];
 };
+
+export type StatsWithReplica = Stats & { replicaIndex: number };
+
+export type StatsReport = {
+    deleteStats: StatsWithReplica[];
+    saveStats: StatsWithReplica[];
+};
+
+export type SyncResult = { statsReport: StatsReport; syncMetadataReport: SyncMetadataReport };
+
+export const metadataActions = ["CREATE", "CREATE_AND_UPDATE", "DELETE", "DELETE_WITH_DATA"] as const;
+export type MetadataActionType = typeof metadataActions[number];
