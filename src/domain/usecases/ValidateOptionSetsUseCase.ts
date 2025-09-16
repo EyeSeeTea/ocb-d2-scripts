@@ -8,6 +8,7 @@ import { OptionSetValidator } from "domain/entities/OptionSetValidator";
 import { Exceptions, Project, Service } from "domain/entities/Service";
 import { promiseMap } from "data/dhis2-utils";
 import logger from "utils/log";
+import { Maybe } from "utils/ts-utils";
 
 export class ValidateOptionSetsUseCase {
     constructor(
@@ -60,6 +61,12 @@ export class ValidateOptionSetsUseCase {
         if (!options.update) return;
 
         const optionsToSave = this.fixAndGetOptions(optionSets, validationResults);
+        const optionSetsToSave = this.fixAndGetOptionSets(optionSets, validationResults);
+
+        console.log("Options to update:", optionSetsToSave.length);
+
+        await this.optionSetRepository.save(optionSetsToSave, { dryRun: !options.update });
+
         await promiseMap(optionsToSave, async option => {
             await this.optionRepository.save(option, { dryRun: !options.update });
         });
@@ -86,6 +93,35 @@ export class ValidateOptionSetsUseCase {
                     if (!option || !error.fixedValue) return undefined;
 
                     return { ...option, code: error.fixedValue };
+                })
+                .compact()
+                .value();
+        });
+    }
+
+    private fixAndGetOptionSets(
+        optionSets: OptionSet[],
+        validationResults: OptionSetValidator[]
+    ): OptionSet[] {
+        const optionSetsById = _(optionSets)
+            .keyBy(optionSet => optionSet.id)
+            .value();
+
+        return validationResults.flatMap((validationResult): OptionSet[] => {
+            const onlyFixableErrors = _(validationResult.errors)
+                .filter(error => error.type === "option_set")
+                .groupBy(error => error.id)
+                .filter(errors => errors.every(error => error.property === "code"))
+                .map(errors => errors.find(error => error.fixedValue))
+                .compact()
+                .value();
+
+            return _(onlyFixableErrors)
+                .map((error): Maybe<OptionSet> => {
+                    const option = optionSetsById[error.id];
+                    if (!option || !error.fixedValue) return undefined;
+
+                    return OptionSet.create({ ...option, code: error.fixedValue });
                 })
                 .compact()
                 .value();
