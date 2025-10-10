@@ -40,12 +40,12 @@ export class OptionSetD2Repository implements OptionSetRepository {
                 const existingRecord = response.objects.find(d2Os => d2Os.id === optionSetId);
                 const optionSet = optionSets.find(os => os.id === optionSetId);
                 if (!optionSet) {
-                    throw Error("Cannot find optionSet");
+                    throw Error(`OptionSet with id ${optionSetId} not found`);
                 }
                 return {
                     ...(existingRecord || {}),
                     name: optionSet.name,
-                    code: optionSet.code ?? "",
+                    code: optionSet.code,
                 };
             });
 
