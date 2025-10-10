@@ -107,7 +107,7 @@ export class ServiceValidationStrategy {
         switch (pattern.type) {
             case "standard_pattern": {
                 const { optionName, service } = pattern;
-                const serviceCode = settings.services.find(s => s.code === service)?.code;
+                const serviceCode = settings.services.find(s => service.includes(s.code))?.code;
                 if (!serviceCode)
                     return [
                         this.generateValidationError({
@@ -194,13 +194,16 @@ export class ServiceValidationStrategy {
 
     private validateStandardPattern(name: string): Maybe<StandardPattern> {
         // [Option Name] ([service acronym])
-        const pattern = /^(?<optionName>.+?)\s*\(\s*(?<service>[A-Z0-9_]+)\s*\)$/;
+        const pattern = /^(?<optionName>.+?)\s*\(\s*(?<service>[^)]+)\s*\)$/;
         const match = name.match(pattern);
         if (!match || !match.groups) return undefined;
 
         const { optionName, service } = match.groups;
 
         if (!optionName || !service) return undefined;
+
+        if (service.includes("OoP")) return undefined;
+        if (service.startsWith("IN") || service.startsWith("OUT")) return undefined;
 
         return { optionName: optionName, service: service, type: "standard_pattern" };
     }
