@@ -193,7 +193,6 @@ export class ServiceValidationStrategy {
     }
 
     private validateStandardPattern(name: string): Maybe<StandardPattern> {
-        if (name.includes("OoP")) return undefined;
         // [Option Name] ([service acronym])
         const pattern = /^(?<optionName>.+?)\s*\(\s*(?<service>[^)]+)\s*\)$/;
         const match = name.match(pattern);
@@ -202,6 +201,9 @@ export class ServiceValidationStrategy {
         const { optionName, service } = match.groups;
 
         if (!optionName || !service) return undefined;
+
+        if (service.includes("OoP")) return undefined;
+        if (service.startsWith("IN") || service.startsWith("OUT")) return undefined;
 
         return { optionName: optionName, service: service, type: "standard_pattern" };
     }

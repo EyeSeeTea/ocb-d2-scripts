@@ -63,7 +63,7 @@ export class ValidateOptionSetsUseCase {
         const optionsToSave = this.fixAndGetOptions(optionSets, validationResults);
         const optionSetsToSave = this.fixAndGetOptionSets(optionSets, validationResults);
 
-        console.log("Options to update:", optionSetsToSave.length);
+        logger.debug(`Options to update: ${optionSetsToSave.length}`);
 
         await this.optionSetRepository.save(optionSetsToSave, { dryRun: !options.update });
 
