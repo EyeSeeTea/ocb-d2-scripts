@@ -3,7 +3,7 @@ import { D2Api } from "types/d2-api";
 import { Async } from "domain/entities/Async";
 import { OptionSet } from "domain/entities/OptionSet";
 import { OptionSetRepository } from "domain/repositories/OptionSetRepository";
-import { promiseMap } from "./dhis2-utils";
+import { getInChunks, promiseMap } from "./dhis2-utils";
 import logger from "utils/log";
 
 export class OptionSetD2Repository implements OptionSetRepository {
@@ -22,6 +22,44 @@ export class OptionSetD2Repository implements OptionSetRepository {
         });
 
         return _(optionSets).flatten().value();
+    }
+
+    async save(optionSets: OptionSet[], options?: { dryRun: boolean }): Async<void> {
+        const allIds = optionSets.map(os => os.id);
+
+        const stats = await getInChunks(allIds, async optionSetIds => {
+            const response = await this.api.models.optionSets
+                .get({
+                    fields: { $owner: true },
+                    filter: { id: { in: optionSetIds } },
+                    paging: false,
+                })
+                .getData();
+
+            const optionSetsToSave = optionSetIds.map(optionSetId => {
+                const existingRecord = response.objects.find(d2Os => d2Os.id === optionSetId);
+                const optionSet = optionSets.find(os => os.id === optionSetId);
+                if (!optionSet) {
+                    throw Error(`OptionSet with id ${optionSetId} not found`);
+                }
+                return {
+                    ...(existingRecord || {}),
+                    name: optionSet.name,
+                    code: optionSet.code,
+                };
+            });
+
+            const postResponse = await this.api.metadata
+                .post(
+                    { optionSets: optionSetsToSave },
+                    { importMode: options?.dryRun ? "VALIDATE" : "COMMIT" }
+                )
+                .getData();
+
+            return [postResponse.stats];
+        });
+
+        console.debug("OptionSets saved:", JSON.stringify(stats, null, 2));
     }
 
     private getOptionsSets(page: number) {
