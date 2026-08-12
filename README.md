@@ -60,6 +60,21 @@ yarn start options analyze \
     --update # persist changes
 ```
 
+#### Renaming an option code
+
+With `--update`, changing an option code also recodes everything that references the old code:
+
+-   `dataValues` and tracker `events`, where the code is used as a value.
+-   `programIndicators` (`expression`, `filter`), `programRules` (`condition`) and
+    `programRuleActions` (`data`, `content`), where the code is referenced as a quoted literal inside
+    an expression. References by uid, such as `programRuleActions.option`, are not affected by a code
+    change and are left untouched.
+
+Before anything is modified, the initial state is written to disk as `dataValues_<optionId>_<date>.json`,
+`events_<optionId>_<date>.json` and `programMetadata_<optionId>_<date>.json`. The metadata backup
+contains the complete objects, so it can be posted back as it is. If any step fails, the script rolls
+back the option code and every collection it had already updated.
+
 Services must be a csv file with the following format:
 
 ```csv

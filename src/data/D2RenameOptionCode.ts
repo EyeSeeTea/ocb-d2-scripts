@@ -1,9 +1,16 @@
 import _ from "lodash";
-import { D2Api, DataValueSetsDataValue, MetadataPick, D2TrackerEventToPost } from "../types/d2-api";
+import {
+    D2Api,
+    DataValueSetsDataValue,
+    MetadataPayload,
+    MetadataPick,
+    D2TrackerEventToPost,
+} from "../types/d2-api";
 import { Async } from "domain/entities/Async";
 import { Id } from "domain/entities/Base";
 import { promiseMap } from "./dhis2-utils";
 import { saveJsonToDisk } from "./files";
+import { objectReferencesCode, recodeFields } from "./optionCodeReferences";
 
 /**
  * Rename the code in DHIS2 option model and related metadata/data.
@@ -23,6 +30,8 @@ import { saveJsonToDisk } from "./files";
  * - Metadata: Rename the option code
  * - Data values: Recode the associated code used as dataValues[].value
  * - Events: Recode the associated code used as dataValues[].value
+ * - Metadata: Recode the code referenced as a quoted literal in the expressions of
+ *   programIndicators, programRules and programRuleActions
  * - Metadata: Recode the attribute values associated with the option (TODO)
  * - Tracker: Recode the associated tracked entity attributes (TODO)
  */
@@ -51,6 +60,7 @@ export class D2RenameOptionCode {
 
         const dataValues = await this.getDataValues(options);
         const events = await this.getEvents(options);
+        const programMetadata = this.getProgramMetadata(options);
 
         return {
             option: option,
@@ -58,6 +68,7 @@ export class D2RenameOptionCode {
             metadata: metadata,
             initialDataValues: dataValues,
             initialEvents: events,
+            initialProgramMetadata: programMetadata,
         };
     }
 
@@ -69,9 +80,11 @@ export class D2RenameOptionCode {
         // Get data
         const dataValues = await this.recodeDataValuesGet(options);
         const events = await this.recodeEventsGet(options);
+        const programMetadata = this.recodeProgramMetadataGet(options);
 
         // Update metadata
         await this.saveOption(options);
+        await this.postProgramMetadata(programMetadata);
 
         // Update data
         await this.postDataValues(dataValues);
@@ -101,6 +114,9 @@ export class D2RenameOptionCode {
                     ...metadataQuery.organisationUnits,
                     filter: { level: { eq: "1" } },
                 },
+                programIndicators: metadataQuery.programIndicators,
+                programRules: metadataQuery.programRules,
+                programRuleActions: metadataQuery.programRuleActions,
             })
             .getData();
     }
@@ -273,12 +289,80 @@ export class D2RenameOptionCode {
         }
     }
 
+    /* Program metadata: the option code is referenced as a quoted literal in expressions */
+
+    private getProgramMetadata(options: RecodeOptionsWithMetadata): ProgramMetadata {
+        const { option, metadata } = options;
+
+        const programMetadata: ProgramMetadata = {
+            programIndicators: metadata.programIndicators.filter(programIndicator => {
+                return objectReferencesCode(programIndicator, programIndicatorFields, option.code);
+            }),
+            programRules: metadata.programRules.filter(programRule => {
+                return objectReferencesCode(programRule, programRuleFields, option.code);
+            }),
+            programRuleActions: metadata.programRuleActions.filter(programRuleAction => {
+                return objectReferencesCode(programRuleAction, programRuleActionFields, option.code);
+            }),
+        };
+
+        const msg = getProgramMetadataNames(programMetadata);
+        console.debug(`[recodeProgramMetadata] References to code ${option.code}: ${msg}`);
+
+        return programMetadata;
+    }
+
+    private recodeProgramMetadataGet(options: OptionsWithMetadataValues): ProgramMetadata {
+        const { option, toCode, initialProgramMetadata } = options;
+        const recode = <T extends object>(object: T, fields: ReadonlyArray<keyof T>) =>
+            recodeFields(object, fields, option.code, toCode);
+
+        const programMetadata: ProgramMetadata = {
+            programIndicators: initialProgramMetadata.programIndicators.map(programIndicator => {
+                return recode(programIndicator, programIndicatorFields);
+            }),
+            programRules: initialProgramMetadata.programRules.map(programRule => {
+                return recode(programRule, programRuleFields);
+            }),
+            programRuleActions: initialProgramMetadata.programRuleActions.map(programRuleAction => {
+                return recode(programRuleAction, programRuleActionFields);
+            }),
+        };
+
+        console.debug(
+            `[recodeProgramMetadata] Objects to update: ${countProgramMetadata(programMetadata)}`
+        );
+
+        return programMetadata;
+    }
+
+    private async postProgramMetadata(programMetadata: ProgramMetadata): Async<void> {
+        const count = countProgramMetadata(programMetadata);
+        console.debug(`[recodeProgramMetadata] Objects to post: ${count}`);
+
+        if (this.dryRun) {
+            console.debug(`[recodeProgramMetadata] Dry run`);
+            return;
+        } else if (count === 0) {
+            console.debug(`[recodeProgramMetadata] No objects to post`);
+            return;
+        } else {
+            const res = await this.api.metadata.post(getProgramMetadataPayload(programMetadata)).getData();
+            console.debug(`[recodeProgramMetadata] Post response: ${JSON.stringify(res.status)}`);
+
+            if (res.status !== "OK") {
+                throw new Error(`Failed to save program metadata: ${JSON.stringify(res)}`);
+            }
+        }
+    }
+
     private async rollback(options: OptionsWithMetadataValues) {
-        const { option, metadata, initialDataValues, initialEvents } = options;
+        const { option, metadata, initialDataValues, initialEvents, initialProgramMetadata } = options;
 
         console.debug("[rollback] Executing rollback...");
 
         await this.saveOption({ ...options, toCode: option.code, metadata });
+        await this.postProgramMetadata(initialProgramMetadata);
         await this.postDataValues(initialDataValues);
         await this.postEvents(initialEvents);
 
@@ -286,12 +370,13 @@ export class D2RenameOptionCode {
     }
 
     private saveDataToDisk(options: OptionsWithMetadataValues): void {
-        const { option, initialDataValues, initialEvents } = options;
+        const { option, initialDataValues, initialEvents, initialProgramMetadata } = options;
 
         saveJsonToDisk(`dataValues_${option.id}`, { dataValues: initialDataValues });
         saveJsonToDisk(`events_${option.id}`, { events: initialEvents });
+        saveJsonToDisk(`programMetadata_${option.id}`, initialProgramMetadata);
 
-        console.debug(`Initial data saved to disk: option, dataValues and events`);
+        console.debug(`Initial data saved to disk: option, dataValues, events and program metadata`);
     }
 }
 
@@ -307,6 +392,7 @@ type RecodeOptionsWithMetadata = RecodeOptions & {
 type OptionsWithMetadataValues = RecodeOptionsWithMetadata & {
     initialDataValues: DataValueSetsDataValue[];
     initialEvents: D2Event[];
+    initialProgramMetadata: ProgramMetadata;
 };
 
 type D2Option = {
@@ -330,9 +416,60 @@ const metadataQuery = {
     organisationUnits: {
         fields: { id: true },
     },
+    // The whole object is requested because a metadata post replaces it: a partial payload would
+    // wipe the fields not sent.
+    programIndicators: {
+        fields: { $owner: true },
+    },
+    programRules: {
+        fields: { $owner: true },
+    },
+    programRuleActions: {
+        fields: { $owner: true },
+    },
 } as const;
 
 type Metadata = MetadataPick<typeof metadataQuery>;
+
+type ProgramMetadata = Readonly<{
+    programIndicators: Metadata["programIndicators"];
+    programRules: Metadata["programRules"];
+    programRuleActions: Metadata["programRuleActions"];
+}>;
+
+// Fields where DHIS2 stores an option code as a quoted literal.
+const programIndicatorFields = ["expression", "filter"] as const;
+const programRuleFields = ["condition"] as const;
+// `data` is an expression, `content` the message shown to the user, which also quotes the code.
+const programRuleActionFields = ["data", "content"] as const;
+
+/**
+ * The $owner pick types programRuleActions.evaluationEnvironments as Ref[], while the POST payload
+ * declares it as never[]. The value is read from the server and posted back untouched, so only that
+ * single property is re-typed.
+ */
+function getProgramMetadataPayload(programMetadata: ProgramMetadata): Partial<MetadataPayload> {
+    return {
+        programIndicators: programMetadata.programIndicators,
+        programRules: programMetadata.programRules,
+        programRuleActions: programMetadata.programRuleActions.map(programRuleAction => ({
+            ...programRuleAction,
+            evaluationEnvironments: programRuleAction.evaluationEnvironments as never[],
+        })),
+    };
+}
+
+function countProgramMetadata(programMetadata: ProgramMetadata): number {
+    return _(programMetadata)
+        .values()
+        .sumBy(objects => objects.length);
+}
+
+function getProgramMetadataNames(programMetadata: ProgramMetadata): string {
+    return _(programMetadata)
+        .map((objects, model) => `${model}=${objects.length}`)
+        .join(", ");
+}
 
 // TODO: Escape special chars (: , /) using escape char /
 // See https://docs.dhis2.org/en/develop/using-the-api/dhis-core-version-master/tracker.html
