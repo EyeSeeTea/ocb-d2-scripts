@@ -11,6 +11,7 @@ import { Id } from "domain/entities/Base";
 import { promiseMap } from "./dhis2-utils";
 import { saveJsonToDisk } from "./files";
 import { objectReferencesCode, recodeFields } from "./optionCodeReferences";
+import { recodeDimensionCollections, recodeQueryCriteria } from "./optionCodeFilters";
 
 /**
  * Rename the code in DHIS2 option model and related metadata/data.
@@ -32,6 +33,8 @@ import { objectReferencesCode, recodeFields } from "./optionCodeReferences";
  * - Events: Recode the associated code used as dataValues[].value
  * - Metadata: Recode the code referenced as a quoted literal in the expressions of
  *   programIndicators, programRules and programRuleActions
+ * - Metadata: Recode the code used as a filter item in the dimensions of eventVisualizations and
+ *   mapViews, and in the query criteria of eventFilters
  * - Metadata: Recode the attribute values associated with the option (TODO)
  * - Tracker: Recode the associated tracked entity attributes (TODO)
  */
@@ -61,6 +64,7 @@ export class D2RenameOptionCode {
         const dataValues = await this.getDataValues(options);
         const events = await this.getEvents(options);
         const programMetadata = this.getProgramMetadata(options);
+        const analyticsMetadata = await this.getAnalyticsMetadata(options);
 
         return {
             option: option,
@@ -69,6 +73,7 @@ export class D2RenameOptionCode {
             initialDataValues: dataValues,
             initialEvents: events,
             initialProgramMetadata: programMetadata,
+            initialAnalyticsMetadata: analyticsMetadata,
         };
     }
 
@@ -81,10 +86,12 @@ export class D2RenameOptionCode {
         const dataValues = await this.recodeDataValuesGet(options);
         const events = await this.recodeEventsGet(options);
         const programMetadata = this.recodeProgramMetadataGet(options);
+        const analyticsMetadata = this.recodeAnalyticsMetadataGet(options);
 
         // Update metadata
         await this.saveOption(options);
         await this.postProgramMetadata(programMetadata);
+        await this.postAnalyticsMetadata(analyticsMetadata);
 
         // Update data
         await this.postDataValues(dataValues);
@@ -356,13 +363,159 @@ export class D2RenameOptionCode {
         }
     }
 
+    /* Analytics metadata: the option code is used as a filter item */
+
+    /**
+     * Locate the favourites and working lists that filter on one of the data items bound to the
+     * option set, which is the same chain already used for dataValues and events. Locating by item
+     * uid, and not by the code itself, keeps the query safe for codes with any character.
+     */
+    private async getAnalyticsMetadata(options: RecodeOptionsWithMetadata): Async<AnalyticsMetadata> {
+        const { metadata } = options;
+        const dataElementIds = metadata.dataElements.map(dataElement => dataElement.id);
+        const attributeIds = metadata.trackedEntityAttributes.map(attribute => attribute.id);
+        const programIndicatorIds = getProgramIndicatorIdsForItems(metadata, [
+            ...dataElementIds,
+            ...attributeIds,
+        ]);
+
+        const [eventVisualizations, mapViews, eventFilters] = await Promise.all([
+            this.getByDimensions<D2EventVisualization>("eventVisualizations", {
+                dataElementIds,
+                attributeIds,
+                programIndicatorIds,
+            }),
+            this.getByDimensions<D2MapView>("mapViews", {
+                dataElementIds,
+                attributeIds,
+                programIndicatorIds,
+            }),
+            this.getByFilter<D2EventFilter>(
+                "eventFilters",
+                "eventQueryCriteria.dataFilters.dataItem",
+                dataElementIds
+            ),
+        ]);
+
+        const analyticsMetadata = this.recodeAnalyticsMetadata(
+            { eventVisualizations, mapViews, eventFilters },
+            options
+        );
+
+        // Only the objects that actually reference the code are kept, the same way getDataValues
+        // keeps only the data values whose value is the code.
+        const initial: AnalyticsMetadata = {
+            eventVisualizations: eventVisualizations.filter(
+                (object, index) => !_.isEqual(object, analyticsMetadata.eventVisualizations[index])
+            ),
+            mapViews: mapViews.filter(
+                (object, index) => !_.isEqual(object, analyticsMetadata.mapViews[index])
+            ),
+            eventFilters: eventFilters.filter(
+                (object, index) => !_.isEqual(object, analyticsMetadata.eventFilters[index])
+            ),
+        };
+
+        const msg = getCountsByModel(initial);
+        console.debug(`[recodeAnalytics] References to code ${options.option.code}: ${msg}`);
+
+        return initial;
+    }
+
+    private recodeAnalyticsMetadataGet(options: OptionsWithMetadataValues): AnalyticsMetadata {
+        const analyticsMetadata = this.recodeAnalyticsMetadata(options.initialAnalyticsMetadata, options);
+
+        console.debug(`[recodeAnalytics] Objects to update: ${countModels(analyticsMetadata)}`);
+
+        return analyticsMetadata;
+    }
+
+    private recodeAnalyticsMetadata(
+        analyticsMetadata: AnalyticsMetadata,
+        options: RecodeOptions
+    ): AnalyticsMetadata {
+        const { option, toCode } = options;
+
+        return {
+            eventVisualizations: analyticsMetadata.eventVisualizations.map(object =>
+                recodeDimensionFilters(object, option.code, toCode)
+            ),
+            mapViews: analyticsMetadata.mapViews.map(object =>
+                recodeDimensionFilters(object, option.code, toCode)
+            ),
+            eventFilters: analyticsMetadata.eventFilters.map(object => ({
+                ...object,
+                eventQueryCriteria: recodeQueryCriteria(
+                    object.eventQueryCriteria,
+                    option.code,
+                    toCode
+                ),
+            })),
+        };
+    }
+
+    private async postAnalyticsMetadata(analyticsMetadata: AnalyticsMetadata): Async<void> {
+        const count = countModels(analyticsMetadata);
+        console.debug(`[recodeAnalytics] Objects to post: ${count}`);
+
+        if (this.dryRun) {
+            console.debug(`[recodeAnalytics] Dry run`);
+            return;
+        } else if (count === 0) {
+            console.debug(`[recodeAnalytics] No objects to post`);
+            return;
+        } else {
+            // Maps are not posted: a mapView belongs to a single map, so updating the mapView is
+            // what updates the copy seen through maps.mapViews.
+            const res = await this.api.metadata.post(analyticsMetadata).getData();
+            console.debug(`[recodeAnalytics] Post response: ${JSON.stringify(res.status)}`);
+
+            if (res.status !== "OK") {
+                throw new Error(`Failed to save analytics metadata: ${JSON.stringify(res)}`);
+            }
+        }
+    }
+
+    private async getByDimensions<T extends { id?: Id }>(
+        model: string,
+        itemIds: DimensionItemIds
+    ): Async<T[]> {
+        const [byDataElement, byAttribute, byProgramIndicator] = await Promise.all([
+            this.getByFilter<T>(model, "dataElementDimensions.dataElement.id", itemIds.dataElementIds),
+            this.getByFilter<T>(model, "attributeDimensions.attribute.id", itemIds.attributeIds),
+            this.getByFilter<T>(
+                model,
+                "programIndicatorDimensions.programIndicator.id",
+                itemIds.programIndicatorIds
+            ),
+        ]);
+
+        return _.uniqBy([...byDataElement, ...byAttribute, ...byProgramIndicator], object => object.id);
+    }
+
+    private async getByFilter<T>(model: string, field: string, ids: Id[]): Async<T[]> {
+        if (_.isEmpty(ids)) return [];
+
+        const response = await this.api
+            .get<Record<string, T[]>>(`/${model}`, {
+                fields: ":owner",
+                filter: `${field}:in:[${ids.join(",")}]`,
+                paging: false,
+            })
+            .getData();
+
+        return response[model] ?? [];
+    }
+
     private async rollback(options: OptionsWithMetadataValues) {
-        const { option, metadata, initialDataValues, initialEvents, initialProgramMetadata } = options;
+        const { option, metadata, initialDataValues, initialEvents } = options;
+        const { initialProgramMetadata, initialAnalyticsMetadata } = options;
 
         console.debug("[rollback] Executing rollback...");
 
         await this.saveOption({ ...options, toCode: option.code, metadata });
         await this.postProgramMetadata(initialProgramMetadata);
+        await this.postAnalyticsMetadata(initialAnalyticsMetadata);
         await this.postDataValues(initialDataValues);
         await this.postEvents(initialEvents);
 
@@ -370,13 +523,15 @@ export class D2RenameOptionCode {
     }
 
     private saveDataToDisk(options: OptionsWithMetadataValues): void {
-        const { option, initialDataValues, initialEvents, initialProgramMetadata } = options;
+        const { option, initialDataValues, initialEvents } = options;
+        const { initialProgramMetadata, initialAnalyticsMetadata } = options;
 
         saveJsonToDisk(`dataValues_${option.id}`, { dataValues: initialDataValues });
         saveJsonToDisk(`events_${option.id}`, { events: initialEvents });
         saveJsonToDisk(`programMetadata_${option.id}`, initialProgramMetadata);
+        saveJsonToDisk(`analyticsMetadata_${option.id}`, initialAnalyticsMetadata);
 
-        console.debug(`Initial data saved to disk: option, dataValues, events and program metadata`);
+        console.debug(`Initial data saved to disk: option, dataValues, events and metadata`);
     }
 }
 
@@ -393,6 +548,7 @@ type OptionsWithMetadataValues = RecodeOptionsWithMetadata & {
     initialDataValues: DataValueSetsDataValue[];
     initialEvents: D2Event[];
     initialProgramMetadata: ProgramMetadata;
+    initialAnalyticsMetadata: AnalyticsMetadata;
 };
 
 type D2Option = {
@@ -460,13 +616,68 @@ function getProgramMetadataPayload(programMetadata: ProgramMetadata): Partial<Me
 }
 
 function countProgramMetadata(programMetadata: ProgramMetadata): number {
-    return _(programMetadata)
+    return countModels(programMetadata);
+}
+
+function getProgramMetadataNames(programMetadata: ProgramMetadata): string {
+    return getCountsByModel(programMetadata);
+}
+
+/* Analytics metadata */
+
+type D2EventVisualization = MetadataPayload["eventVisualizations"][number];
+type D2MapView = MetadataPayload["mapViews"][number];
+type D2EventFilter = MetadataPayload["eventFilters"][number];
+
+type AnalyticsMetadata = Readonly<{
+    eventVisualizations: D2EventVisualization[];
+    mapViews: D2MapView[];
+    eventFilters: D2EventFilter[];
+}>;
+
+type DimensionItemIds = {
+    dataElementIds: Id[];
+    attributeIds: Id[];
+    programIndicatorIds: Id[];
+};
+
+// Both eventVisualizations and mapViews hold the code in the same three dimension collections.
+const dimensionCollections = [
+    "dataElementDimensions",
+    "attributeDimensions",
+    "programIndicatorDimensions",
+] as const;
+
+function recodeDimensionFilters<T extends object>(object: T, fromCode: string, toCode: string): T {
+    return recodeDimensionCollections(object, dimensionCollections, fromCode, toCode);
+}
+
+/**
+ * A program indicator dimension holds an option code only when the indicator itself returns the
+ * value of a data item bound to the option set, so the candidates are the indicators whose
+ * expression or filter references one of those items.
+ */
+function getProgramIndicatorIdsForItems(metadata: Metadata, itemIds: Id[]): Id[] {
+    return metadata.programIndicators
+        .filter(programIndicator => {
+            const expressions = [programIndicator.expression, programIndicator.filter];
+            return itemIds.some(itemId =>
+                expressions.some(expression => expression?.includes(itemId))
+            );
+        })
+        .map(programIndicator => programIndicator.id);
+}
+
+/* Shared helpers for metadata grouped by model */
+
+function countModels(metadataByModel: Record<string, unknown[]>): number {
+    return _(metadataByModel)
         .values()
         .sumBy(objects => objects.length);
 }
 
-function getProgramMetadataNames(programMetadata: ProgramMetadata): string {
-    return _(programMetadata)
+function getCountsByModel(metadataByModel: Record<string, unknown[]>): string {
+    return _(metadataByModel)
         .map((objects, model) => `${model}=${objects.length}`)
         .join(", ");
 }

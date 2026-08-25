@@ -69,11 +69,19 @@ With `--update`, changing an option code also recodes everything that references
     `programRuleActions` (`data`, `content`), where the code is referenced as a quoted literal inside
     an expression. References by uid, such as `programRuleActions.option`, are not affected by a code
     change and are left untouched.
+-   `eventVisualizations` and `mapViews`, where the code is a filter item of a dimension
+    (`IN:CODE1;CODE2`), and `eventFilters`, where it is a value of `eventQueryCriteria.dataFilters`.
+    These are located through the data elements and tracked entity attributes bound to the option
+    set, the same chain used for dataValues and events. Maps are not posted: a mapView belongs to a
+    single map, so updating the mapView updates what `maps.mapViews` shows. `eventReports` and
+    `eventCharts` need no separate handling, since they are legacy views over the same
+    `eventVisualizations`.
 
 Before anything is modified, the initial state is written to disk as `dataValues_<optionId>_<date>.json`,
-`events_<optionId>_<date>.json` and `programMetadata_<optionId>_<date>.json`. The metadata backup
-contains the complete objects, so it can be posted back as it is. If any step fails, the script rolls
-back the option code and every collection it had already updated.
+`events_<optionId>_<date>.json`, `programMetadata_<optionId>_<date>.json` and
+`analyticsMetadata_<optionId>_<date>.json`. Each metadata backup contains the complete objects, so it
+can be posted back as it is. If any step fails, the script rolls back the option code and every
+collection it had already updated.
 
 Services must be a csv file with the following format:
 
