@@ -60,6 +60,40 @@ yarn start options analyze \
     --update # persist changes
 ```
 
+#### Square brackets mode
+
+`--square-brackets` sets the code of every option to the content of the square brackets of its name.
+An option whose name has no square brackets is left as it is, whatever its code:
+
+| option name                          | option code | result                             |
+| ------------------------------------ | ----------- | ---------------------------------- |
+| `[O-MEN] Outbreak case - meningitis` | `TOP`       | `O-MEN`                            |
+| `[O-MEN] Outbreak case - meningitis` | `O-MEN`     | not reported, already matches      |
+| `Vaginal delivery (MAT)`             | `[VD]`      | untouched, no brackets in the name |
+| `[] No content`                      | `ABC`       | untouched, blank group             |
+| `[A] Text [B]`                       | `X`         | `A`, the first group               |
+
+The content is taken literally, without normalizing it, so the resulting code can contain characters
+such as `-`.
+
+It is an exclusive mode: it replaces the category conventions instead of complementing them, applies
+to every option set including the ones without a category, and needs neither `--services-path` nor
+`--projects-path`. The report of unknown option sets is generated empty, since the category plays no
+part here.
+
+An option set cannot hold two options with the same code. When two options of the same set would end
+up with the same one, they are reported with the rule `duplicated_code` and no value to update, and
+none of them is modified.
+
+```shell
+yarn start options analyze \
+    --url='http://localhost:8080' \
+    --auth='username:password or PAT token' \
+    --square-brackets \
+    --report-path='report-name.csv' \
+    --update # persist changes
+```
+
 #### Renaming an option code
 
 With `--update`, changing an option code also recodes everything that references the old code:

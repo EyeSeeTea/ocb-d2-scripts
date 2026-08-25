@@ -1,7 +1,8 @@
 import { describe, test, expect } from "vitest";
 
-import { OptionSetValidator } from "../OptionSetValidator";
+import { OptionSetValidator, SettingsValidation } from "../OptionSetValidator";
 import { Project, Service } from "../Service";
+import { Option } from "../Option";
 import { createOptionSet } from "./OptionSet.spec";
 
 const projects: Project[] = [
@@ -16,7 +17,8 @@ const services: Service[] = [
     { code: "ED", name: "ED" },
 ];
 
-const validateOptions = { projects, services, exceptions: [] };
+const validateOptions: SettingsValidation = { projects, services, exceptions: [], mode: "categories" };
+const squareBracketsOptions: SettingsValidation = { ...validateOptions, mode: "square_brackets" };
 
 describe("OptionSetValidator", () => {
     test("should not have errors if optionSet SERVICE STANDARD convention is valid", () => {
@@ -174,5 +176,86 @@ describe("OptionSetValidator", () => {
         });
         const validator = OptionSetValidator.build(optionSet, validateOptions);
         expect(validator.errors).toHaveLength(1);
+    });
+});
+
+describe("OptionSetValidator in square brackets mode", () => {
+    function buildOptions(options: Option[]) {
+        const optionSet = createOptionSet({ name: "Diagnosis list", category: "UNKNOWN", options });
+        return OptionSetValidator.build(optionSet, squareBracketsOptions).errors;
+    }
+
+    function createOption(attrs: Partial<Option>): Option {
+        return { id: "1", name: "An option", code: "A_CODE", sortOrder: 1, ...attrs };
+    }
+
+    test("should set the code to the content of the square brackets of the name", () => {
+        const errors = buildOptions([
+            createOption({ id: "1", name: "[O-MEN] Outbreak case - meningitis", code: "TOP" }),
+        ]);
+
+        expect(errors).toEqual([
+            {
+                id: "1",
+                name: "[O-MEN] Outbreak case - meningitis",
+                code: "TOP",
+                type: "option",
+                rule: "square_brackets",
+                property: "code",
+                currentValue: "TOP",
+                fixedValue: "O-MEN",
+            },
+        ]);
+    });
+
+    test("should not report an option whose name has no square brackets", () => {
+        expect(buildOptions([createOption({ name: "Outbreak case", code: "[TOP]" })])).toEqual([]);
+    });
+
+    test("should not report an option whose code already matches its square brackets", () => {
+        expect(buildOptions([createOption({ name: "[O-MEN] Outbreak", code: "O-MEN" })])).toEqual([]);
+    });
+
+    test("should take the first group when the name has several", () => {
+        const errors = buildOptions([createOption({ name: "[A] Text [B]", code: "X" })]);
+        expect(errors.map(error => error.fixedValue)).toEqual(["A"]);
+    });
+
+    test("should ignore a group with blank content", () => {
+        expect(buildOptions([createOption({ name: "[ ] Blank", code: "X" })])).toEqual([]);
+    });
+
+    test("should apply the rule to a category that has its own convention", () => {
+        const optionSet = createOptionSet({
+            name: "NEON- Admission type",
+            category: "SERVICE",
+            options: [createOption({ name: "[IN] Inborn (NEON)", code: "[IN]" })],
+        });
+        const errors = OptionSetValidator.build(optionSet, squareBracketsOptions).errors;
+
+        expect(errors.map(error => error.fixedValue)).toEqual(["IN"]);
+    });
+
+    test("should not fix two options whose names resolve to the same code", () => {
+        const errors = buildOptions([
+            createOption({ id: "1", name: "[HH] Uno", code: "X" }),
+            createOption({ id: "2", name: "[HH] Dos", code: "Y" }),
+        ]);
+
+        expect(errors.map(error => [error.id, error.rule, error.fixedValue])).toEqual([
+            ["1", "duplicated_code", undefined],
+            ["2", "duplicated_code", undefined],
+        ]);
+    });
+
+    test("should not fix an option that collides with the code of an untouched option", () => {
+        const errors = buildOptions([
+            createOption({ id: "1", name: "[HH] Uno", code: "X" }),
+            createOption({ id: "2", name: "Sin corchetes", code: "HH" }),
+        ]);
+
+        expect(errors.map(error => [error.id, error.rule, error.fixedValue])).toEqual([
+            ["1", "duplicated_code", undefined],
+        ]);
     });
 });

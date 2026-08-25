@@ -4,7 +4,7 @@ import { OptionSetRepository } from "domain/repositories/OptionSetRepository";
 import { Async } from "domain/entities/Async";
 import { Option } from "domain/entities/Option";
 import { OptionRepository } from "domain/repositories/OptionRepository";
-import { OptionSetValidator } from "domain/entities/OptionSetValidator";
+import { OptionSetValidator, ValidationMode } from "domain/entities/OptionSetValidator";
 import { Exceptions, Project, Service } from "domain/entities/Service";
 import { promiseMap } from "data/dhis2-utils";
 import logger from "utils/log";
@@ -38,19 +38,29 @@ export class ValidateOptionSetsUseCase {
     ): ValidationOptionSetResponse & { optionSets: OptionSet[] } {
         const serviceCodes = options.services.map(service => service.code);
         const optionSetsWithCategory = OptionSet.buildWithCategory(optionSets, serviceCodes);
-        const { unknown, otherCategories } = this.splitOptionSets(optionSetsWithCategory);
+        const { unknown, toValidate } = this.splitOptionSets(optionSetsWithCategory, options.mode);
 
-        const optionSetValidations = otherCategories.flatMap(optionSet =>
+        const optionSetValidations = toValidate.flatMap(optionSet =>
             OptionSetValidator.build(optionSet, options)
         );
 
-        return { unknown, optionSetValidations, optionSets: otherCategories };
+        return { unknown, optionSetValidations, optionSets: toValidate };
     }
 
-    private splitOptionSets(optionSets: OptionSet[]): { unknown: OptionSet[]; otherCategories: OptionSet[] } {
+    /**
+     * The category conventions only apply to the option sets that have a category, so the unknown
+     * ones are set apart and just listed in their own report. The square brackets rule does not
+     * depend on the category, so there every option set is validated.
+     */
+    private splitOptionSets(
+        optionSets: OptionSet[],
+        mode: ValidationMode
+    ): { unknown: OptionSet[]; toValidate: OptionSet[] } {
+        if (mode === "square_brackets") return { unknown: [], toValidate: optionSets };
+
         const unknown = OptionSet.getUnknown(optionSets);
-        const otherCategories = optionSets.filter(optionSet => !unknown.some(u => u.id === optionSet.id));
-        return { unknown, otherCategories };
+        const toValidate = optionSets.filter(optionSet => !unknown.some(u => u.id === optionSet.id));
+        return { unknown, toValidate };
     }
 
     private async saveOptions(
@@ -60,7 +70,7 @@ export class ValidateOptionSetsUseCase {
     ): Async<void> {
         if (!options.update) return;
 
-        const optionsToSave = this.fixAndGetOptions(optionSets, validationResults);
+        const optionsToSave = this.fixAndGetOptions(optionSets, validationResults, options.mode);
         const optionSetsToSave = this.fixAndGetOptionSets(optionSets, validationResults);
 
         logger.debug(`Options to update: ${optionSetsToSave.length}`);
@@ -72,7 +82,11 @@ export class ValidateOptionSetsUseCase {
         });
     }
 
-    private fixAndGetOptions(optionSets: OptionSet[], validationResults: OptionSetValidator[]): Option[] {
+    private fixAndGetOptions(
+        optionSets: OptionSet[],
+        validationResults: OptionSetValidator[],
+        mode: ValidationMode
+    ): Option[] {
         const optionsById = _(optionSets)
             .flatMap(optionSet => optionSet.options)
             .keyBy(option => option.id)
@@ -82,8 +96,11 @@ export class ValidateOptionSetsUseCase {
             const onlyFixableErrors = _(validationResult.errors)
                 .filter(error => error.type === "option")
                 .groupBy(error => error.id)
-                .filter(errors => errors.every(error => error.property === "code"))
-                .map(errors => errors.find(error => error.fixedValue))
+                // With the category conventions an option is only fixed when every error it has is
+                // about its code. The square brackets rule fixes the code on its own, so an option
+                // is not skipped because of the errors of its name.
+                .filter(errors => mode === "square_brackets" || errors.every(e => e.property === "code"))
+                .map(errors => errors.find(error => error.property === "code" && error.fixedValue))
                 .compact()
                 .value();
 
@@ -131,6 +148,7 @@ export class ValidateOptionSetsUseCase {
 
 type UseCaseOptions = {
     update: boolean;
+    mode: ValidationMode;
     services: Service[];
     projects: Project[];
     exceptions: Exceptions[];
