@@ -10,6 +10,7 @@ import { OptionD2Repository } from "data/OptionD2Repository";
 import { Maybe } from "utils/ts-utils";
 import { Service } from "domain/entities/Service";
 import { OptionSetValidatorReport } from "./OptionReport";
+import { ValidationMode } from "domain/entities/OptionSetValidator";
 
 export const analyzeOptionsCmd = command({
     name: "analyze",
@@ -34,15 +35,24 @@ export const analyzeOptionsCmd = command({
             defaultValue: () => false,
             type: boolean,
         }),
+        squareBrackets: flag({
+            long: "square-brackets",
+            description:
+                "Set the code of every option to the content of the square brackets of its name. Replaces the category conventions and does not use the services/projects csv files",
+            defaultValue: () => false,
+            type: boolean,
+        }),
         servicesPath: option({
             type: string,
             long: "services-path",
-            description: "Path to the csv file with services",
+            description: "Path to the csv file with services. Not used with --square-brackets",
+            defaultValue: () => "",
         }),
         projectsPath: option({
             type: string,
             long: "projects-path",
-            description: "Path to the csv file with projects",
+            description: "Path to the csv file with projects. Not used with --square-brackets",
+            defaultValue: () => "",
         }),
         exceptionsPath: option({
             type: string,
@@ -53,9 +63,13 @@ export const analyzeOptionsCmd = command({
     },
     handler: async args => {
         const { exceptionsPath, servicesPath, projectsPath } = args;
-        const services = await readNamedRefFromCsv(servicesPath);
-        const projects = await readNamedRefFromCsv(projectsPath);
-        const exceptions = exceptionsPath ? await readNamedRefFromCsv(exceptionsPath) : [];
+        const mode: ValidationMode = args.squareBrackets ? "square_brackets" : "categories";
+
+        // The square brackets mode does not use the category conventions, so it needs none of the csv files.
+        const usesCategories = mode === "categories";
+        const services = usesCategories ? await readNamedRefFromCsv(servicesPath) : [];
+        const projects = usesCategories ? await readNamedRefFromCsv(projectsPath) : [];
+        const exceptions = usesCategories && exceptionsPath ? await readNamedRefFromCsv(exceptionsPath) : [];
 
         const api = getD2ApiFromArgs(args);
         const optionSetRepository = new OptionSetD2Repository(api);
@@ -66,6 +80,7 @@ export const analyzeOptionsCmd = command({
             optionRepository
         ).execute({
             update: args.update,
+            mode,
             services,
             projects,
             exceptions,
