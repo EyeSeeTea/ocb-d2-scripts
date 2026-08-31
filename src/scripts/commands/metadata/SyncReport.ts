@@ -4,7 +4,7 @@ import { createArrayCsvStringifier } from "csv-writer";
 import { mkdirSync, writeFileSync } from "fs";
 import logger from "utils/log";
 import path from "path";
-import { MetadataValidationResult } from "domain/entities/MetadataValidationResult";
+import { getSourceName, MetadataValidationResult } from "domain/entities/MetadataValidationResult";
 
 export class SyncReport {
     public generateReports(syncResult: SyncResult): void {
@@ -47,6 +47,14 @@ export class SyncReport {
             metadataPropertiesDiscrepanciesCsvContent,
             path.join(rootFolderPath, "properties_discrepancies_metadata.csv"),
             "Properties discrepancies metadata CSV report"
+        );
+
+        const skippedMetadataCsvContent = this.generateSkippedMetadataCsv(syncReport);
+
+        this.generateCsvFileAndLog(
+            skippedMetadataCsvContent,
+            path.join(rootFolderPath, "skipped_metadata.csv"),
+            "Skipped metadata CSV report"
         );
     }
 
@@ -207,6 +215,33 @@ export class SyncReport {
         return [header, ...rows].join("");
     }
 
+    /*
+        Objects that could not be compared because their identifier is missing.
+    */
+    private generateSkippedMetadataCsv(syncReport: SyncMetadataReport): string {
+        const skippedCsvStringifier = createArrayCsvStringifier({
+            header: ["model", "id", "name", "code", "server", "reason"],
+        });
+        const header = skippedCsvStringifier.getHeaderString();
+        const rows = syncReport.skippedMetadata.flatMap(result =>
+            result.items
+                .map(item =>
+                    skippedCsvStringifier.stringifyRecords([
+                        [
+                            item.object.model,
+                            item.object.id,
+                            item.object.name,
+                            item.object.code ?? "",
+                            getSourceName(item.source),
+                            item.reason,
+                        ],
+                    ])
+                )
+                .join("")
+        );
+        return [header, ...rows].join("");
+    }
+
     private generateExclusiveMetadataCsv(syncReport: SyncMetadataReport): string {
         const exclusiveCsvStringifier = createArrayCsvStringifier({
             header: ["model", "id", "name", "code", "server"],
@@ -221,7 +256,7 @@ export class SyncReport {
                             item.object.id,
                             item.object.name,
                             item.object.code ?? "",
-                            item.source.type === "replica" ? `Replica ${item.source.index + 1}` : "metadata",
+                            getSourceName(item.source),
                         ],
                     ])
                 )

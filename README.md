@@ -94,8 +94,13 @@ Get a comparison between a main server and multiple replicas:
 -   Identify metadata objects that exist only in one of the instances (based on IDs).
 -   Detect objects with the same ID but different codes to flag discrepancies.
 -   Detect objects with the same ID but different in any fields.
+-   Report the objects that could not be compared, so nothing is silently left out.
 
-\*For users `OIDC` is being used as `ID`
+\*For users the `OIDC` identifier (`openId`) is used as `ID` instead of the DHIS2 uid. Users without an
+`OIDC` identifier cannot be matched between servers, so they are **excluded** from the three
+comparisons above (they are never proposed for CREATE/DELETE either) and listed in
+`skipped_metadata.csv`, along with a warning in the log with the amount of objects skipped per model
+and server.
 
 ```shell
 yarn start metadata sync \
