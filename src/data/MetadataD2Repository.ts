@@ -57,6 +57,8 @@ export class MetadataD2Repository implements MetadataRepository {
                         ...user,
                         model: options.model,
                         code: user.userCredentials.username,
+                        lastUpdated: user.lastUpdated,
+                        lastUpdatedBy: getLastUpdatedByName(user.lastUpdatedBy),
                         additionalFields: { ...user },
                         openId: user.openId,
                         type: "user",
@@ -83,6 +85,8 @@ export class MetadataD2Repository implements MetadataRepository {
                     (obj): MetadataObject => ({
                         ...obj,
                         model: options.model,
+                        lastUpdated: obj.lastUpdated,
+                        lastUpdatedBy: getLastUpdatedByName(obj.lastUpdatedBy),
                         additionalFields: { ...obj },
                         type: "common",
                     })
@@ -366,10 +370,22 @@ export class MetadataD2Repository implements MetadataRepository {
     }
 }
 
+function getLastUpdatedByName(lastUpdatedBy: Maybe<D2LastUpdatedBy>): Maybe<string> {
+    return lastUpdatedBy?.username ?? lastUpdatedBy?.name ?? lastUpdatedBy?.id;
+}
+
+interface D2LastUpdatedBy {
+    id: Id;
+    name: Maybe<string>;
+    username: Maybe<string>;
+}
+
 interface BasicD2Object {
     id: Id;
     name: string;
     code: Maybe<string>;
+    lastUpdated: Maybe<string>;
+    lastUpdatedBy: Maybe<D2LastUpdatedBy>;
 }
 
 interface D2User {
@@ -377,6 +393,8 @@ interface D2User {
     name: string;
     openId: string;
     userCredentials: { username: string };
+    lastUpdated: Maybe<string>;
+    lastUpdatedBy: Maybe<D2LastUpdatedBy>;
 }
 
 type D2ApiDataElement = { id: Id; domainType: "TRACKER" | "AGGREGATE" };
