@@ -149,6 +149,10 @@ export class SyncReport {
                 "Code in Replica Server",
                 "Replica Server Number",
                 "Diff Fields",
+                "lastUpdated in Metadata Server",
+                "lastUpdatedBy in Metadata Server",
+                "lastUpdated in Replica Server",
+                "lastUpdatedBy in Replica Server",
             ],
         });
         const header = propertiesDiscrepanciesCsvStringifier.getHeaderString();
@@ -163,6 +167,10 @@ export class SyncReport {
                             item.replicaObject.code ?? "",
                             item.replicaIndex + 1,
                             item.differingFields.join("-"),
+                            item.mainObject.lastUpdated ?? "",
+                            item.mainObject.lastUpdatedBy ?? "",
+                            item.replicaObject.lastUpdated ?? "",
+                            item.replicaObject.lastUpdatedBy ?? "",
                         ],
                     ])
                 )
@@ -186,6 +194,10 @@ export class SyncReport {
                 "Code in Metadata Server",
                 "Code in Replica Server",
                 "Replica Server Number",
+                "lastUpdated in Metadata Server",
+                "lastUpdatedBy in Metadata Server",
+                "lastUpdated in Replica Server",
+                "lastUpdatedBy in Replica Server",
             ],
         });
         const header = discrepanciesCsvStringifier.getHeaderString();
@@ -199,6 +211,10 @@ export class SyncReport {
                             item.mainObject.code,
                             item.replicaObject.code ?? "",
                             item.replicaIndex + 1,
+                            item.mainObject.lastUpdated ?? "",
+                            item.mainObject.lastUpdatedBy ?? "",
+                            item.replicaObject.lastUpdated ?? "",
+                            item.replicaObject.lastUpdatedBy ?? "",
                         ],
                     ])
                 )
@@ -209,7 +225,7 @@ export class SyncReport {
 
     private generateExclusiveMetadataCsv(syncReport: SyncMetadataReport): string {
         const exclusiveCsvStringifier = createArrayCsvStringifier({
-            header: ["model", "id", "name", "code", "server"],
+            header: ["model", "id", "name", "code", "server", "lastUpdated", "lastUpdatedBy"],
         });
         const header = exclusiveCsvStringifier.getHeaderString();
         const rows = syncReport.exclusiveMetadata.flatMap(result =>
@@ -222,6 +238,8 @@ export class SyncReport {
                             item.object.name,
                             item.object.code ?? "",
                             item.source.type === "replica" ? `Replica ${item.source.index + 1}` : "metadata",
+                            item.object.lastUpdated ?? "",
+                            item.object.lastUpdatedBy ?? "",
                         ],
                     ])
                 )

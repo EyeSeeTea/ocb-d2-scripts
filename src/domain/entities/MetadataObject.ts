@@ -9,6 +9,8 @@ export interface MetadataObjectBase {
     id: Id;
     name: string;
     code: Maybe<string>;
+    lastUpdated: Maybe<string>;
+    lastUpdatedBy: Maybe<string>;
     additionalFields?: Record<string, unknown>;
 }
 
