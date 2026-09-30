@@ -21,16 +21,40 @@ export function getDifferingFields(
 
 function areFieldValuesEqual(
     field: string,
-    mainValue: unknown,
-    replicaValue: unknown,
+    mainFieldValue: unknown,
+    replicaFieldValue: unknown,
     schema: MetadataModelSchema
 ): boolean {
+    const mainValue = withoutIgnoredPropertiesInEmbeddedObjects(mainFieldValue);
+    const replicaValue = withoutIgnoredPropertiesInEmbeddedObjects(replicaFieldValue);
     const isUnorderedPair =
         schema.unorderedFields.has(field) && Array.isArray(mainValue) && Array.isArray(replicaValue);
 
     return isUnorderedPair
         ? _.isEqual(toCanonicalMultiset(mainValue), toCanonicalMultiset(replicaValue))
         : _.isEqual(mainValue, replicaValue);
+}
+
+/*
+    The ignored properties are properties of metadata objects: the root object and the objects
+    embedded in its collections. Plain objects outside collections (sharing, program, metaData) are
+    values, so they are kept as they are; otherwise sharing.users would stop being compared.
+*/
+function withoutIgnoredPropertiesInEmbeddedObjects(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(withoutIgnoredProperties);
+    if (isPlainRecord(value)) return _.mapValues(value, withoutIgnoredPropertiesInEmbeddedObjects);
+    return value;
+}
+
+function withoutIgnoredProperties(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(withoutIgnoredProperties);
+    if (!isPlainRecord(value)) return value;
+
+    return Object.fromEntries(
+        Object.entries(value)
+            .filter(([key]) => !METADATA_PROPERTIES_TO_IGNORE.includes(key))
+            .map(([key, nestedValue]) => [key, withoutIgnoredProperties(nestedValue)])
+    );
 }
 
 function toCanonicalMultiset(values: ReadonlyArray<unknown>): ReadonlyArray<string> {

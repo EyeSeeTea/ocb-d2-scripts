@@ -6,12 +6,24 @@ import { categoryOptionComboRefs, createCategoryCombo } from "./fixtures/categor
 const UNORDERED_FIELD = "categoryOptionCombos";
 const ORDERED_FIELD = "categories";
 
-const schema = buildMetadataModelSchema("categoryCombos", [UNORDERED_FIELD, "translations"]);
+const EMBEDDED_FIELD = "analyticsPeriodBoundaries";
+
+const schema = buildMetadataModelSchema("categoryCombos", [UNORDERED_FIELD, "translations", EMBEDDED_FIELD]);
 
 const [refA, refB, refC] = categoryOptionComboRefs;
 
 const esTranslation = { locale: "es", property: "NAME", value: "CNTA Edad 6 y salida" };
 const frTranslation = { locale: "fr", property: "NAME", value: "Âge 6 et sortie en CNTA" };
+
+const boundary = {
+    id: "bsYTEAt1tDL",
+    boundaryTarget: "#{Eo2UjAyArMN.AE32B5xKY83}",
+    analyticsPeriodBoundaryType: "BEFORE_END_OF_REPORTING_PERIOD",
+    offsetPeriods: -1,
+    lastUpdated: "2022-09-01T04:11:34.132",
+    access: { read: true, write: true },
+    sharing: { external: false, users: {}, userGroups: {} },
+};
 
 describe("getDifferingFields", () => {
     describe("fields without order in DHIS2", () => {
@@ -73,6 +85,51 @@ describe("getDifferingFields", () => {
             expect(compare({ [ORDERED_FIELD]: [refA, refB] }, { [ORDERED_FIELD]: [refB, refA] })).toEqual([
                 ORDERED_FIELD,
             ]);
+        });
+    });
+
+    describe("ignored properties in embedded objects", () => {
+        it("ignores them in the items of a field without order", () => {
+            const replicaBoundary = { ...boundary, lastUpdated: "2022-08-02T07:21:46.181" };
+
+            expect(
+                compare({ [EMBEDDED_FIELD]: [boundary] }, { [EMBEDDED_FIELD]: [replicaBoundary] })
+            ).toEqual([]);
+        });
+
+        it("ignores them in the items of a field with order", () => {
+            const replicaBoundary = { ...boundary, lastUpdated: "2022-08-02T07:21:46.181" };
+
+            expect(compare({ [ORDERED_FIELD]: [boundary] }, { [ORDERED_FIELD]: [replicaBoundary] })).toEqual(
+                []
+            );
+        });
+
+        it("ignores them at any depth inside the items", () => {
+            const replicaBoundary = {
+                ...boundary,
+                access: { read: true, write: false },
+                sharing: { ...boundary.sharing, users: { userId1: { access: "r-------" } } },
+            };
+
+            expect(
+                compare({ [EMBEDDED_FIELD]: [boundary] }, { [EMBEDDED_FIELD]: [replicaBoundary] })
+            ).toEqual([]);
+        });
+
+        it("reports a difference in a property that is not ignored", () => {
+            const replicaBoundary = { ...boundary, offsetPeriods: -2 };
+
+            expect(
+                compare({ [EMBEDDED_FIELD]: [boundary] }, { [EMBEDDED_FIELD]: [replicaBoundary] })
+            ).toEqual([EMBEDDED_FIELD]);
+        });
+
+        it("keeps comparing the users of the sharing of the root object", () => {
+            const mainSharing = { owner: "M5zQapPyTZI", users: {}, userGroups: {}, public: "rw------" };
+            const replicaSharing = { ...mainSharing, users: { userId1: { access: "rw------" } } };
+
+            expect(compare({ sharing: mainSharing }, { sharing: replicaSharing })).toEqual(["sharing"]);
         });
     });
 

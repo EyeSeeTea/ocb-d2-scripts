@@ -107,8 +107,11 @@ and server.
 as sets, so the same items returned in a different order are not reported as a discrepancy. Which
 collections have order is read from `/api/schemas` of the main server (`ordered` property), except
 `attributeValues`, which is always compared as a set because DHIS2 stores it as a map and not every
-version declares it as a collection. Collections with order (for example `categoryCombos.categories` or `optionSets.options`) are still compared taking
-the order into account.
+version declares it as a collection. Properties ignored in the comparison (`lastUpdated`, `access`,
+`lastUpdatedBy`, ...) are also ignored inside the objects embedded in collections (for example
+`analyticsPeriodBoundaries` or `programStageDataElements`), but not in plain objects of the first level
+such as `sharing`. Collections with order (for example `categoryCombos.categories` or
+`optionSets.options`) are still compared taking the order into account.
 
 ```shell
 yarn start metadata sync \
