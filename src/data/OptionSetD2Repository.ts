@@ -3,7 +3,8 @@ import { D2Api } from "types/d2-api";
 import { Async } from "domain/entities/Async";
 import { OptionSet } from "domain/entities/OptionSet";
 import { OptionSetRepository } from "domain/repositories/OptionSetRepository";
-import { getInChunks, promiseMap } from "./dhis2-utils";
+import { getInChunks } from "./dhis2-utils";
+import { promiseMap } from "utils/promises";
 import logger from "utils/log";
 
 export class OptionSetD2Repository implements OptionSetRepository {

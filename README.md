@@ -94,8 +94,24 @@ Get a comparison between a main server and multiple replicas:
 -   Identify metadata objects that exist only in one of the instances (based on IDs).
 -   Detect objects with the same ID but different codes to flag discrepancies.
 -   Detect objects with the same ID but different in any fields.
+-   Report the objects that could not be compared, so nothing is silently left out.
 
-\*For users `OIDC` is being used as `ID`
+\*For users the `OIDC` identifier (`openId`) is used as `ID` instead of the DHIS2 uid. Users without an
+`OIDC` identifier cannot be matched between servers, so they are **excluded** from the three
+comparisons above (they are never proposed for CREATE/DELETE either) and listed in
+`skipped_metadata.csv`, along with a warning in the log with the amount of objects skipped per model
+and server.
+
+\*When comparing fields, collections that have no order in DHIS2 (for example
+`categoryCombos.categoryOptionCombos`, `translations`, `attributeValues` or group members) are compared
+as sets, so the same items returned in a different order are not reported as a discrepancy. Which
+collections have order is read from `/api/schemas` of the main server (`ordered` property), except
+`attributeValues`, which is always compared as a set because DHIS2 stores it as a map and not every
+version declares it as a collection. Properties ignored in the comparison (`lastUpdated`, `access`,
+`lastUpdatedBy`, ...) are also ignored inside the objects embedded in collections (for example
+`analyticsPeriodBoundaries` or `programStageDataElements`), but not in plain objects of the first level
+such as `sharing`. Collections with order (for example `categoryCombos.categories` or
+`optionSets.options`) are still compared taking the order into account.
 
 ```shell
 yarn start metadata sync \

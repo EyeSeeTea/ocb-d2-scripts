@@ -2,17 +2,27 @@ import _ from "lodash";
 
 import { Maybe } from "utils/ts-utils";
 import { Async } from "domain/entities/Async";
-import { MetadataModel, MetadataObjectWithType } from "domain/entities/MetadataObject";
+import {
+    ComparableMetadataObject,
+    getComparisonIdentifier,
+    MetadataModel,
+    MetadataObjectWithType,
+} from "domain/entities/MetadataObject";
 import { MetadataRepository } from "domain/repositories/MetadataRepository";
+import { MetadataModelSchema } from "domain/entities/MetadataSchema";
+import { getDifferingFields } from "domain/entities/MetadataComparison";
 import {
     ExclusiveMetadataItem,
     MetadataValidationResult,
     DiscrepancyMetadata,
     DiscrepancyValidationResult,
-    METADATA_PROPERTIES_TO_IGNORE,
+    SkippedMetadataItem,
+    SkippedValidationResult,
+    Source,
+    getSourceName,
 } from "domain/entities/MetadataValidationResult";
 import logger from "utils/log";
-import { promiseMap } from "data/dhis2-utils";
+import { promiseMap } from "utils/promises";
 import { Stats } from "domain/entities/Stats";
 
 export class SyncMetadataUseCase {
@@ -111,28 +121,38 @@ export class SyncMetadataUseCase {
                 )
             );
 
+            const schema = await this.metadataRepositoryMain.getModelSchema(model);
+
+            const main = this.partitionByIdentity(model, mainObjects, { type: "main" });
+            const replicas = replicaObjects.map((objects, index) =>
+                this.partitionByIdentity(model, objects, { type: "replica", index: index })
+            );
+            const comparableReplicas = replicas.map(replica => replica.comparable);
+
             const exclusiveMetadata = this.findExclusiveMetadataWithSource(
-                mainObjects,
-                replicaObjects,
+                main.comparable,
+                comparableReplicas,
                 totalReplicas
             );
 
             const metadataWithCodeDiscrepancies = this.findCodeDiscrepanciesForModel(
                 model,
-                mainObjects,
-                replicaObjects
+                main.comparable,
+                comparableReplicas
             );
 
             const metadataWithPropertiesDiscrepancies = this.findFieldDiscrepanciesForModel(
-                model,
-                mainObjects,
-                replicaObjects
+                schema,
+                main.comparable,
+                comparableReplicas
             );
+
             return {
                 model,
                 exclusiveMetadata,
                 metadataWithCodeDiscrepancies,
                 metadataWithPropertiesDiscrepancies,
+                skippedMetadata: [...main.skipped, ...replicas.flatMap(replica => replica.skipped)],
             };
         });
 
@@ -149,76 +169,112 @@ export class SyncMetadataUseCase {
                 model: result.model,
                 items: result.metadataWithPropertiesDiscrepancies,
             })),
+            skippedMetadata: resultByModel.map(result => ({
+                model: result.model,
+                items: result.skippedMetadata,
+            })),
         };
     }
 
     /*
-      Metadata objects that exist only in one of the instances (based on IDs).
+      Split the objects of a server between the ones that can be compared and the ones that cannot,
+      because their comparison identifier is missing (users without an OIDC identifier). Comparing
+      the latter would match unrelated objects, so they are excluded and reported apart.
+    */
+    private partitionByIdentity(
+        model: MetadataModel,
+        objects: MetadataObjectWithType[],
+        source: Source
+    ): PartitionedMetadata {
+        const objectsWithIdentifier = objects.map(object => ({
+            object: object,
+            identifier: getComparisonIdentifier(object),
+        }));
+
+        const comparable = _(objectsWithIdentifier)
+            .map(
+                ({ object, identifier }): Maybe<ComparableMetadataObject> =>
+                    identifier ? { object: object, identifier: identifier } : undefined
+            )
+            .compact()
+            .value();
+
+        const skipped = _(objectsWithIdentifier)
+            .filter(({ identifier }) => !identifier)
+            .map(({ object }): SkippedMetadataItem => {
+                return { object: object, source: source, reason: "missing-identifier" };
+            })
+            .value();
+
+        if (skipped.length > 0) {
+            logger.warn(
+                `[${getSourceName(source)}]: ${skipped.length} ${model} skipped, ` +
+                    `their identifier could not be resolved`
+            );
+        }
+
+        return { comparable: comparable, skipped: skipped };
+    }
+
+    /*
+      Metadata objects that exist only in one of the instances (based on their identifiers).
     */
     private findExclusiveMetadataWithSource(
-        main: MetadataObjectWithType[],
-        replicas: MetadataObjectWithType[][],
+        main: ComparableMetadataObject[],
+        replicas: ComparableMetadataObject[][],
         totalReplicas: number
     ): ExclusiveMetadataItem[] {
         const metadataWithSource = [
             ...main.map(
-                (metadataObject): ExclusiveMetadataItem => ({
-                    object: metadataObject,
-                    source: { type: "main" },
+                (comparable): IdentifiedExclusiveItem => ({
+                    identifier: comparable.identifier,
+                    item: { object: comparable.object, source: { type: "main" } },
                 })
             ),
             ...replicas.flatMap((list, replicaIndex) =>
                 list.map(
-                    (metadataObject): ExclusiveMetadataItem => ({
-                        object: metadataObject,
-                        source: { type: "replica", index: replicaIndex },
+                    (comparable): IdentifiedExclusiveItem => ({
+                        identifier: comparable.identifier,
+                        item: {
+                            object: comparable.object,
+                            source: { type: "replica", index: replicaIndex },
+                        },
                     })
                 )
             ),
         ];
 
-        const metadataGroupedById = _.groupBy(metadataWithSource, item =>
-            this.getIdByMetadataType(item.object)
-        );
+        const metadataGroupedById = _.groupBy(metadataWithSource, entry => entry.identifier);
         const exclusiveMetadata = _.pickBy(metadataGroupedById, group => group.length !== totalReplicas + 1);
 
         return _(exclusiveMetadata)
-            .map(group => group[0])
+            .map(group => group[0]?.item)
             .compact()
             .value();
     }
 
     private findCodeDiscrepanciesAgainstMain(
         model: MetadataModel,
-        mainList: MetadataObjectWithType[],
-        replicaList: MetadataObjectWithType[],
+        mainList: ComparableMetadataObject[],
+        replicaList: ComparableMetadataObject[],
         replicaIdx: number
     ): DiscrepancyMetadata[] {
-        const mainById = _(mainList)
-            .filter(mainObj => mainObj.model === model)
-            .keyBy(metadataObject => this.getIdByMetadataType(metadataObject))
-            .value();
+        const mainByIdentifier = _.keyBy(mainList, comparable => comparable.identifier);
 
         return _(replicaList)
-            .filter(replicaObj => replicaObj.model === model)
-            .filter(replicaObj => {
-                const replicaId = this.getIdByMetadataType(replicaObj);
-                const mainObj = mainById[replicaId];
-                if (!mainObj) return false;
+            .map((replica): Maybe<DiscrepancyMetadata> => {
+                const mainObject = mainByIdentifier[replica.identifier]?.object;
+                if (!mainObject) return undefined;
 
-                const codeMain = mainObj.code ?? "";
-                const codeReplica = replicaObj.code ?? "";
-                return codeMain !== codeReplica;
-            })
-            .map(replicaObj => {
-                const replicaId = this.getIdByMetadataType(replicaObj);
-                const mainObj = mainById[replicaId];
-                if (!mainObj) return undefined;
+                const codeMain = mainObject.code ?? "";
+                const codeReplica = replica.object.code ?? "";
+                if (codeMain === codeReplica) return undefined;
+
                 return {
-                    model,
-                    id: replicaId,
-                    mainObject: mainObj,
-                    replicaObject: replicaObj,
+                    model: model,
+                    id: replica.identifier,
+                    mainObject: mainObject,
+                    replicaObject: replica.object,
                     replicaIndex: replicaIdx,
                     differingFields: ["code"],
                 };
@@ -228,63 +284,44 @@ export class SyncMetadataUseCase {
     }
 
     /* 
-        Detect objects with the same ID but different codes to flag discrepancies.
+        Detect objects with the same identifier but different codes to flag discrepancies.
      */
     private findCodeDiscrepanciesForModel(
         model: MetadataModel,
-        mainList: MetadataObjectWithType[],
-        replicaLists: MetadataObjectWithType[][]
+        mainList: ComparableMetadataObject[],
+        replicaLists: ComparableMetadataObject[][]
     ): DiscrepancyMetadata[] {
         return replicaLists.flatMap((replicaList, idx) =>
             this.findCodeDiscrepanciesAgainstMain(model, mainList, replicaList, idx)
         );
     }
 
-    private compareFields(mainObj: MetadataObjectWithType, replicaObj: MetadataObjectWithType): string[] {
-        const mainAdd = mainObj.additionalFields ?? {};
-        const replicaAdd = replicaObj.additionalFields ?? {};
-
-        const allKeys = new Set([...Object.keys(mainAdd), ...Object.keys(replicaAdd)]);
-
-        return _(Array.from(allKeys))
-            .map(key => {
-                if (METADATA_PROPERTIES_TO_IGNORE.includes(key)) return undefined;
-
-                const mainVal = mainAdd[key];
-                const replicaVal = replicaAdd[key];
-                return !_.isEqual(mainVal, replicaVal) ? key : undefined;
-            })
-            .compact()
-            .value();
-    }
-
     /* 
-        Detect objects with the same ID but different in certain fields
+        Detect objects with the same identifier but different in certain fields
      */
     private findFieldDiscrepanciesAgainstMain(
-        model: MetadataModel,
-        mainList: MetadataObjectWithType[],
-        replicaList: MetadataObjectWithType[],
+        schema: MetadataModelSchema,
+        mainList: ComparableMetadataObject[],
+        replicaList: ComparableMetadataObject[],
         replicaIdx: number
     ): DiscrepancyMetadata[] {
-        const mainById = _.keyBy(mainList, object => this.getIdByMetadataType(object));
+        const mainByIdentifier = _.keyBy(mainList, comparable => comparable.identifier);
 
         return _(replicaList)
-            .map((replicaObj): Maybe<DiscrepancyMetadata> => {
-                const replicaId = this.getIdByMetadataType(replicaObj);
-                const mainObj = mainById[replicaId];
-                if (!mainObj) return undefined;
+            .map((replica): Maybe<DiscrepancyMetadata> => {
+                const mainObject = mainByIdentifier[replica.identifier]?.object;
+                if (!mainObject) return undefined;
 
-                const differingFields = this.compareFields(mainObj, replicaObj);
+                const differingFields = getDifferingFields(mainObject, replica.object, schema);
                 if (differingFields.length === 0) return undefined;
 
                 return {
-                    model,
-                    id: replicaId,
-                    mainObject: mainObj,
-                    replicaObject: replicaObj,
+                    model: schema.model,
+                    id: replica.identifier,
+                    mainObject: mainObject,
+                    replicaObject: replica.object,
                     replicaIndex: replicaIdx,
-                    differingFields,
+                    differingFields: differingFields,
                 };
             })
             .compact()
@@ -292,39 +329,38 @@ export class SyncMetadataUseCase {
     }
 
     private findFieldDiscrepanciesForModel(
-        model: MetadataModel,
-        mainList: MetadataObjectWithType[],
-        replicaLists: MetadataObjectWithType[][]
+        schema: MetadataModelSchema,
+        mainList: ComparableMetadataObject[],
+        replicaLists: ComparableMetadataObject[][]
     ): DiscrepancyMetadata[] {
         return replicaLists.flatMap((replicaList, idx) =>
-            this.findFieldDiscrepanciesAgainstMain(model, mainList, replicaList, idx)
+            this.findFieldDiscrepanciesAgainstMain(schema, mainList, replicaList, idx)
         );
     }
 
     private async getObjects(options: {
         model: MetadataModel;
         server: MetadataRepository;
+        page?: number;
     }): Async<MetadataObjectWithType[]> {
-        const { model, server } = options;
-        const allObjects: MetadataObjectWithType[] = [];
+        const { model, server, page = 1 } = options;
+        const { objects, pager } = await server.getPaginated({ model: model, page: page });
+        if (pager.page >= pager.pageCount) return objects;
 
-        for (let page = 1; ; page++) {
-            const { objects, pager } = await server.getPaginated({
-                model: model,
-                page: page,
-            });
-            allObjects.push(...objects);
-
-            if (pager.page >= pager.pageCount) break;
-        }
-
-        return allObjects;
-    }
-
-    private getIdByMetadataType(metadataObject: MetadataObjectWithType): string {
-        return metadataObject.type === "user" ? metadataObject.openId : metadataObject.id;
+        const nextObjects = await this.getObjects({ model: model, server: server, page: page + 1 });
+        return [...objects, ...nextObjects];
     }
 }
+
+type PartitionedMetadata = Readonly<{
+    comparable: ComparableMetadataObject[];
+    skipped: SkippedMetadataItem[];
+}>;
+
+type IdentifiedExclusiveItem = Readonly<{
+    identifier: string;
+    item: ExclusiveMetadataItem;
+}>;
 
 type UseCaseOptions = {
     modelsToCheck: MetadataModel[];
@@ -336,6 +372,7 @@ export type SyncMetadataReport = {
     exclusiveMetadata: MetadataValidationResult[];
     metadataWithCodeDiscrepancies: DiscrepancyValidationResult[];
     metadataWithPropertiesDiscrepancies: DiscrepancyValidationResult[];
+    skippedMetadata: SkippedValidationResult[];
 };
 
 export type StatsWithReplica = Stats & { replicaIndex: number };

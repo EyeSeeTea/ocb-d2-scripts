@@ -17,7 +17,7 @@ export interface MetadataObject extends MetadataObjectBase {
 }
 
 export interface UserMetadataObject extends MetadataObjectBase {
-    openId: string;
+    openId: Maybe<string>;
     type: "user";
 }
 
@@ -27,8 +27,23 @@ export interface MetadataObjectWithTranslations extends MetadataObject {
     translations: Translation[];
 }
 
-export function isUserModel(metadataObject: MetadataObject): boolean {
-    return metadataObject.model === "users";
+/*
+    A metadata object with its comparison identifier already resolved, so comparisons never
+    have to deal with objects that cannot be identified.
+*/
+export type ComparableMetadataObject = Readonly<{
+    identifier: string;
+    object: MetadataObjectWithType;
+}>;
+
+/*
+    Identifier used to match objects between servers: the OIDC identifier (openId) for users
+    and the DHIS2 uid for the rest. Users without an OIDC identifier cannot be matched, so they
+    have no comparison identifier and must be excluded from the comparison.
+*/
+export function getComparisonIdentifier(metadataObject: MetadataObjectWithType): Maybe<string> {
+    const identifier = metadataObject.type === "user" ? metadataObject.openId : metadataObject.id;
+    return identifier || undefined;
 }
 
 type MetadataModelType = typeof allowedMetadataModels[number];

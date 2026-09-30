@@ -6,7 +6,7 @@ import { Option } from "domain/entities/Option";
 import { OptionRepository } from "domain/repositories/OptionRepository";
 import { OptionSetValidator } from "domain/entities/OptionSetValidator";
 import { Exceptions, Project, Service } from "domain/entities/Service";
-import { promiseMap } from "data/dhis2-utils";
+import { promiseMap } from "utils/promises";
 import logger from "utils/log";
 import { Maybe } from "utils/ts-utils";
 

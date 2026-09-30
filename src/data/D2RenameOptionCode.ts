@@ -2,7 +2,7 @@ import _ from "lodash";
 import { D2Api, DataValueSetsDataValue, MetadataPick, D2TrackerEventToPost } from "../types/d2-api";
 import { Async } from "domain/entities/Async";
 import { Id } from "domain/entities/Base";
-import { promiseMap } from "./dhis2-utils";
+import { promiseMap } from "utils/promises";
 import { saveJsonToDisk } from "./files";
 
 /**
