@@ -23,7 +23,7 @@ export type DiscrepancyMetadata = {
     mainObject: MetadataObjectWithType;
     replicaObject: MetadataObjectWithType;
     replicaIndex: number;
-    differingFields: string[];
+    differingFields: Readonly<string[]>;
 };
 
 export type DiscrepancyValidationResult = {

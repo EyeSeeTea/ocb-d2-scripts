@@ -9,6 +9,8 @@ import {
     MetadataObjectWithType,
 } from "domain/entities/MetadataObject";
 import { MetadataRepository } from "domain/repositories/MetadataRepository";
+import { MetadataModelSchema } from "domain/entities/MetadataSchema";
+import { getDifferingFields } from "domain/entities/MetadataComparison";
 import {
     ExclusiveMetadataItem,
     MetadataValidationResult,
@@ -18,10 +20,9 @@ import {
     SkippedValidationResult,
     Source,
     getSourceName,
-    METADATA_PROPERTIES_TO_IGNORE,
 } from "domain/entities/MetadataValidationResult";
 import logger from "utils/log";
-import { promiseMap } from "data/dhis2-utils";
+import { promiseMap } from "utils/promises";
 import { Stats } from "domain/entities/Stats";
 
 export class SyncMetadataUseCase {
@@ -120,6 +121,8 @@ export class SyncMetadataUseCase {
                 )
             );
 
+            const schema = await this.metadataRepositoryMain.getModelSchema(model);
+
             const main = this.partitionByIdentity(model, mainObjects, { type: "main" });
             const replicas = replicaObjects.map((objects, index) =>
                 this.partitionByIdentity(model, objects, { type: "replica", index: index })
@@ -139,7 +142,7 @@ export class SyncMetadataUseCase {
             );
 
             const metadataWithPropertiesDiscrepancies = this.findFieldDiscrepanciesForModel(
-                model,
+                schema,
                 main.comparable,
                 comparableReplicas
             );
@@ -293,29 +296,11 @@ export class SyncMetadataUseCase {
         );
     }
 
-    private compareFields(mainObj: MetadataObjectWithType, replicaObj: MetadataObjectWithType): string[] {
-        const mainAdd = mainObj.additionalFields ?? {};
-        const replicaAdd = replicaObj.additionalFields ?? {};
-
-        const allKeys = new Set([...Object.keys(mainAdd), ...Object.keys(replicaAdd)]);
-
-        return _(Array.from(allKeys))
-            .map(key => {
-                if (METADATA_PROPERTIES_TO_IGNORE.includes(key)) return undefined;
-
-                const mainVal = mainAdd[key];
-                const replicaVal = replicaAdd[key];
-                return !_.isEqual(mainVal, replicaVal) ? key : undefined;
-            })
-            .compact()
-            .value();
-    }
-
     /* 
         Detect objects with the same identifier but different in certain fields
      */
     private findFieldDiscrepanciesAgainstMain(
-        model: MetadataModel,
+        schema: MetadataModelSchema,
         mainList: ComparableMetadataObject[],
         replicaList: ComparableMetadataObject[],
         replicaIdx: number
@@ -327,11 +312,11 @@ export class SyncMetadataUseCase {
                 const mainObject = mainByIdentifier[replica.identifier]?.object;
                 if (!mainObject) return undefined;
 
-                const differingFields = this.compareFields(mainObject, replica.object);
+                const differingFields = getDifferingFields(mainObject, replica.object, schema);
                 if (differingFields.length === 0) return undefined;
 
                 return {
-                    model: model,
+                    model: schema.model,
                     id: replica.identifier,
                     mainObject: mainObject,
                     replicaObject: replica.object,
@@ -344,33 +329,26 @@ export class SyncMetadataUseCase {
     }
 
     private findFieldDiscrepanciesForModel(
-        model: MetadataModel,
+        schema: MetadataModelSchema,
         mainList: ComparableMetadataObject[],
         replicaLists: ComparableMetadataObject[][]
     ): DiscrepancyMetadata[] {
         return replicaLists.flatMap((replicaList, idx) =>
-            this.findFieldDiscrepanciesAgainstMain(model, mainList, replicaList, idx)
+            this.findFieldDiscrepanciesAgainstMain(schema, mainList, replicaList, idx)
         );
     }
 
     private async getObjects(options: {
         model: MetadataModel;
         server: MetadataRepository;
+        page?: number;
     }): Async<MetadataObjectWithType[]> {
-        const { model, server } = options;
-        const allObjects: MetadataObjectWithType[] = [];
+        const { model, server, page = 1 } = options;
+        const { objects, pager } = await server.getPaginated({ model: model, page: page });
+        if (pager.page >= pager.pageCount) return objects;
 
-        for (let page = 1; ; page++) {
-            const { objects, pager } = await server.getPaginated({
-                model: model,
-                page: page,
-            });
-            allObjects.push(...objects);
-
-            if (pager.page >= pager.pageCount) break;
-        }
-
-        return allObjects;
+        const nextObjects = await this.getObjects({ model: model, server: server, page: page + 1 });
+        return [...objects, ...nextObjects];
     }
 }
 

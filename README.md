@@ -102,6 +102,14 @@ comparisons above (they are never proposed for CREATE/DELETE either) and listed 
 `skipped_metadata.csv`, along with a warning in the log with the amount of objects skipped per model
 and server.
 
+\*When comparing fields, collections that have no order in DHIS2 (for example
+`categoryCombos.categoryOptionCombos`, `translations`, `attributeValues` or group members) are compared
+as sets, so the same items returned in a different order are not reported as a discrepancy. Which
+collections have order is read from `/api/schemas` of the main server (`ordered` property), except
+`attributeValues`, which is always compared as a set because DHIS2 stores it as a map and not every
+version declares it as a collection. Collections with order (for example `categoryCombos.categories` or `optionSets.options`) are still compared taking
+the order into account.
+
 ```shell
 yarn start metadata sync \
 --check-models=users,indicators \

@@ -1,13 +1,25 @@
 import { describe, it, expect } from "vitest";
 import { Async } from "domain/entities/Async";
 import { Id } from "domain/entities/Base";
-import { MetadataModel, MetadataObjectWithType, UserMetadataObject } from "domain/entities/MetadataObject";
+import {
+    MetadataModel,
+    MetadataObject,
+    MetadataObjectWithType,
+    UserMetadataObject,
+} from "domain/entities/MetadataObject";
+import {
+    categoryComboId,
+    categoryOptionComboRefs,
+    createCategoryCombo,
+} from "domain/entities/__tests__/fixtures/categoryCombo.data";
+import { buildMetadataModelSchema, MetadataModelSchema } from "domain/entities/MetadataSchema";
 import { Paginated } from "domain/entities/Pagination";
 import { Stats } from "domain/entities/Stats";
 import { MetadataRepository } from "domain/repositories/MetadataRepository";
 import { SyncMetadataReport, SyncMetadataUseCase } from "../SyncMetadataUseCase";
 
 const openId = "john.doe@eyeseetea.com";
+const categoryComboSchema = buildMetadataModelSchema("categoryCombos", ["categoryOptionCombos"]);
 
 describe("SyncMetadataUseCase", () => {
     /*
@@ -102,6 +114,56 @@ describe("SyncMetadataUseCase", () => {
             expect(report.skippedMetadata).toEqual([{ model: "users", items: [] }]);
         });
     });
+
+    describe("category combos with the same option combos in a different order", () => {
+        const [refA, refB, refC] = categoryOptionComboRefs;
+        const categoryOptionCombos = [refA, refB, refC];
+        const reorderedCategoryOptionCombos = [refB, refA, refC];
+        const categories = [{ id: "yG4G9kAtQM0" }, { id: "mQBE0PQwdbh" }];
+
+        it("does not report a discrepancy when the field has no order in DHIS2", async () => {
+            const report = await syncCategoryCombos({
+                main: createCategoryCombo({ categories, categoryOptionCombos }),
+                replica: createCategoryCombo({
+                    categories,
+                    categoryOptionCombos: reorderedCategoryOptionCombos,
+                }),
+            });
+
+            expect(report.metadataWithPropertiesDiscrepancies).toEqual([
+                { model: "categoryCombos", items: [] },
+            ]);
+        });
+
+        it("reports a discrepancy when the field has order in DHIS2", async () => {
+            const mainCategoryCombo = createCategoryCombo({ categories, categoryOptionCombos });
+            const replicaCategoryCombo = createCategoryCombo({
+                categories: [...categories].reverse(),
+                categoryOptionCombos: reorderedCategoryOptionCombos,
+            });
+
+            const report = await syncCategoryCombos({
+                main: mainCategoryCombo,
+                replica: replicaCategoryCombo,
+            });
+
+            expect(report.metadataWithPropertiesDiscrepancies).toEqual([
+                {
+                    model: "categoryCombos",
+                    items: [
+                        {
+                            model: "categoryCombos",
+                            id: categoryComboId,
+                            mainObject: mainCategoryCombo,
+                            replicaObject: replicaCategoryCombo,
+                            replicaIndex: 0,
+                            differingFields: ["categories"],
+                        },
+                    ],
+                },
+            ]);
+        });
+    });
 });
 
 class FakeMetadataRepository implements MetadataRepository {
@@ -116,6 +178,10 @@ class FakeMetadataRepository implements MetadataRepository {
             objects: objects,
             pager: { page: 1, pageCount: 1, total: objects.length, pageSize: objects.length },
         };
+    }
+
+    async getModelSchema(model: MetadataModel): Async<MetadataModelSchema> {
+        return model === "categoryCombos" ? categoryComboSchema : buildMetadataModelSchema(model, []);
     }
 
     async save(): Async<Stats[]> {
@@ -137,6 +203,23 @@ async function syncUsers(options: {
 
     const result = await useCase.execute({
         modelsToCheck: ["users"],
+        action: undefined,
+        persist: false,
+    });
+
+    return result.syncMetadataReport;
+}
+
+async function syncCategoryCombos(options: {
+    main: MetadataObject;
+    replica: MetadataObject;
+}): Async<SyncMetadataReport> {
+    const useCase = new SyncMetadataUseCase(new FakeMetadataRepository({ categoryCombos: [options.main] }), [
+        new FakeMetadataRepository({ categoryCombos: [options.replica] }),
+    ]);
+
+    const result = await useCase.execute({
+        modelsToCheck: ["categoryCombos"],
         action: undefined,
         persist: false,
     });

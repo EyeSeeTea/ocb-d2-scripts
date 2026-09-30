@@ -3,7 +3,8 @@ import { D2Api, PostOptions } from "../types/d2-api";
 import { Async } from "domain/entities/Async";
 import { Id, Ref } from "domain/entities/Base";
 import { MetadataRepository, SaveMetadataOptions } from "domain/repositories/MetadataRepository";
-import { getErrorMessagesFromReports, getInChunks, getPluralModel, promiseMap } from "./dhis2-utils";
+import { getErrorMessagesFromReports, getInChunks, getPluralModel } from "./dhis2-utils";
+import { promiseMap } from "utils/promises";
 import {
     getMetadataModelFromString,
     MetadataModel,
@@ -19,10 +20,13 @@ import { ErrorResponseCodec, TypeReport } from "./ErrorMetadata";
 import { Instance } from "domain/entities/Instance";
 import { buildAuthFromString, buildD2Api } from "scripts/common";
 import { D2TrackerEvent } from "@eyeseetea/d2-api/api/trackerEvents";
+import { buildMetadataModelSchema, MetadataModelSchema } from "domain/entities/MetadataSchema";
+import { getUnorderedCollectionsByModel, UnorderedCollectionsByModel } from "./MetadataSchemaD2";
 
 export class MetadataD2Repository implements MetadataRepository {
     private api: D2Api;
     private excludeModels: MetadataModel[] = ["documents"];
+    private unorderedCollectionsByModel$: Maybe<Promise<UnorderedCollectionsByModel>>;
 
     constructor(private instance: Instance) {
         this.api = buildD2Api({
@@ -91,6 +95,12 @@ export class MetadataD2Repository implements MetadataRepository {
 
             return { objects: objects, pager: res.pager };
         }
+    }
+
+    async getModelSchema(model: MetadataModel): Async<MetadataModelSchema> {
+        this.unorderedCollectionsByModel$ ??= getUnorderedCollectionsByModel(this.api);
+        const unorderedCollectionsByModel = await this.unorderedCollectionsByModel$;
+        return buildMetadataModelSchema(model, unorderedCollectionsByModel[model] ?? []);
     }
 
     async save(metadataObjects: MetadataObjectWithType[], options: SaveMetadataOptions): Async<Stats[]> {
