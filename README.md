@@ -55,10 +55,17 @@ yarn start options analyze \
     --services-path=services.csv \
     --projects-path=projects.csv \
     --exceptions-path=exceptions.csv \
-    --report-path='report-name.csv' \  # default is option-report.csv
-    --unknown-report-path='unknown-optionset-report.csv' # default is unknown-optionset-report.csv
-    --update # persist changes
+    --report-path='optionset-report.csv' \
+    --unknown-report-path='unknown-optionset-report.csv' \
+    --mapping-path='option-code-changes.csv' \
+    --update
 ```
+
+The paths shown are the defaults. `--update` persists the option set codes.
+
+Option codes are never saved by `analyze`: renaming a code must also recode its data and metadata
+references. The proposed option code changes are written to `--mapping-path`, in the format read by
+[recode](#recode), to be reviewed and applied with it. `--update` only saves option set codes.
 
 #### Square brackets mode
 
@@ -91,31 +98,8 @@ yarn start options analyze \
     --auth='username:password or PAT token' \
     --square-brackets \
     --report-path='report-name.csv' \
-    --update # persist changes
+    --mapping-path='option-code-changes.csv'
 ```
-
-#### Renaming an option code
-
-With `--update`, changing an option code also recodes everything that references the old code:
-
--   `dataValues` and tracker `events`, where the code is used as a value.
--   `programIndicators` (`expression`, `filter`), `programRules` (`condition`) and
-    `programRuleActions` (`data`, `content`), where the code is referenced as a quoted literal inside
-    an expression. References by uid, such as `programRuleActions.option`, are not affected by a code
-    change and are left untouched.
--   `eventVisualizations` and `mapViews`, where the code is a filter item of a dimension
-    (`IN:CODE1;CODE2`), and `eventFilters`, where it is a value of `eventQueryCriteria.dataFilters`.
-    These are located through the data elements and tracked entity attributes bound to the option
-    set, the same chain used for dataValues and events. Maps are not posted: a mapView belongs to a
-    single map, so updating the mapView updates what `maps.mapViews` shows. `eventReports` and
-    `eventCharts` need no separate handling, since they are legacy views over the same
-    `eventVisualizations`.
-
-Before anything is modified, the initial state is written to disk as `dataValues_<optionId>_<date>.json`,
-`events_<optionId>_<date>.json`, `programMetadata_<optionId>_<date>.json` and
-`analyticsMetadata_<optionId>_<date>.json`. Each metadata backup contains the complete objects, so it
-can be posted back as it is. If any step fails, the script rolls back the option code and every
-collection it had already updated.
 
 Services must be a csv file with the following format:
 
@@ -141,6 +125,69 @@ PCode-1,Project Code1
 PCode-2,Project Code2
 PCode-3,Project Code3
 ```
+
+### recode
+
+Recode option codes from a mapping CSV, together with every reference to them. The CSV is read by
+header name, so the client file (`option-code-changes.csv`) or the one written by `analyze` can be used
+as they are; other columns are ignored:
+
+| column          | required | description                                         |
+| --------------- | -------- | --------------------------------------------------- |
+| `option_set_id` | yes      | option set of the option                            |
+| `option_id`     | yes      | option to recode                                    |
+| `current_code`  | yes      | expected code on the server                         |
+| `proposed_code` | yes      | new code                                            |
+| `change_type`   | no       | `NO_CHANGE` is skipped, `RECODE_TBC` needs the flag |
+
+```shell
+yarn start options recode \
+    --url='http://localhost:8080' \
+    --auth='username:password or PAT token' \
+    --mapping-path='option-code-changes.csv' \
+    --report-path='option-recode-report.csv' \
+    --include-to-be-confirmed \
+    --update
+```
+
+Without `--update` it is a dry run. `--include-to-be-confirmed` also applies the `RECODE_TBC` rows. The
+report path shown is the default, and a `-summary.csv` with the counts per option set, the items to
+review and the backup file is written next to it.
+
+Every row is validated against the server before any change, and reported with a status (`pending`
+in a dry run, `applied`, `already_applied`, `skipped`, `error`) and a reason:
+
+-   The option must exist, belong to the option set and still have `current_code`. An option already at
+    `proposed_code` is `already_applied`, so running the same mapping again is a no-op.
+-   The final codes of the option set must be unique, counting the options not in the mapping (DHIS2
+    rejects two options with the same code in a set). A change whose code is held by an option that
+    keeps it is rejected, and so are the changes that depend on it.
+
+Each option set is recoded as a whole: every value is mapped once from its original code, so chained
+(`13 -> 1` while `1 -> 2`) and cyclic mappings give the right result whatever the order of the rows.
+When a target code is still held by another option of the set, the options go through temporary codes
+(`TMP_<optionId>`) first. The script recodes:
+
+-   `dataValues` and tracker `events` of the data elements of the option set.
+-   `programIndicators` (`expression`, `filter`), `programRules` (`condition`) and
+    `programRuleActions` (`data`): a quoted code is recoded only when it is compared with an item of
+    the option set (`#{stage.de} == 'CODE'`, `'CODE' != A{tea}`, `d2:countIfValue(#{de}, 'CODE')`, or a
+    program rule variable bound to them), since the same code may belong to other option sets. References
+    by uid, such as `programRuleActions.option`, are not affected by a code change.
+-   `eventVisualizations` dimension filters (`IN:CODE1;CODE2`, `EQ:CODE`) of the items of the option set
+    (data elements, attributes and program indicators returning them), and `eventFilters` criteria
+    (`eventQueryCriteria.dataFilters`). `eventReports` and `eventCharts` are legacy views over the same
+    `eventVisualizations`.
+
+Reported in the summary for manual review, never changed: codes in free texts
+(`programRuleActions.content`) or out of a comparison with an item, `like` filters, tracked entity
+attribute values, and `mapViews` (on DHIS2 2.40 a mapView posted on its own is accepted but not saved,
+and a map PUT recreates its mapViews without their dimension filters).
+
+Order: options, metadata, then data (the tracker validates values against the current option codes).
+Before any change, the initial state of each option set is written to `recode_<optionSetId>_<date>.json`.
+If a step fails, the objects already changed are restored, the rows of that option set are reported as
+`error`, and the next option set is processed.
 
 ## Metadata
 

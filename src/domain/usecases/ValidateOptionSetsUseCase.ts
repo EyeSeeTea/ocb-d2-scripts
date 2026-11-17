@@ -3,39 +3,65 @@ import { OptionSet } from "domain/entities/OptionSet";
 import { OptionSetRepository } from "domain/repositories/OptionSetRepository";
 import { Async } from "domain/entities/Async";
 import { Option } from "domain/entities/Option";
-import { OptionRepository } from "domain/repositories/OptionRepository";
 import { OptionSetValidator, ValidationMode } from "domain/entities/OptionSetValidator";
 import { Exceptions, Project, Service } from "domain/entities/Service";
-import { promiseMap } from "data/dhis2-utils";
 import logger from "utils/log";
 import { Maybe } from "utils/ts-utils";
 
 export class ValidateOptionSetsUseCase {
-    constructor(
-        private readonly optionSetRepository: OptionSetRepository,
-        private readonly optionRepository: OptionRepository
-    ) {}
+    constructor(private readonly optionSetRepository: OptionSetRepository) {}
 
+    /**
+     * Option codes are not saved here: renaming a code must also recode its data and metadata
+     * references, so the fixes are returned as proposed changes, to be applied with `options recode`.
+     * With `update`, only the option set codes are saved.
+     */
     async execute(options: UseCaseOptions): Async<ValidationOptionSetResponse> {
         logger.info("Fetching all option sets...");
         const optionsSets = await this.optionSetRepository.getAll();
-        const validationResult = this.getOptionSetValidators(optionsSets, options);
+        const { optionSets, ...validationResult } = this.getOptionSetValidators(optionsSets, options);
+        const { optionSetValidations } = validationResult;
+
+        const proposedChanges = this.getProposedChanges(optionSets, optionSetValidations, options.mode);
 
         if (options.update) {
-            await this.saveOptions(
-                options,
-                validationResult.optionSets,
-                validationResult.optionSetValidations
-            );
+            const optionSetsToSave = this.fixAndGetOptionSets(optionSets, optionSetValidations);
+            logger.debug(`Option sets to update: ${optionSetsToSave.length}`);
+            await this.optionSetRepository.save(optionSetsToSave, { dryRun: !options.update });
         }
 
-        return validationResult;
+        return { ...validationResult, proposedChanges };
+    }
+
+    private getProposedChanges(
+        optionSets: OptionSet[],
+        validationResults: OptionSetValidator[],
+        mode: ValidationMode
+    ): ProposedOptionChange[] {
+        const byOptionId = new Map(
+            optionSets.flatMap(optionSet =>
+                optionSet.options.map(option => [option.id, { optionSet, option }])
+            )
+        );
+
+        return this.fixAndGetOptions(optionSets, validationResults, mode).flatMap(option => {
+            const found = byOptionId.get(option.id);
+            if (!found) return [];
+            const { optionSet, option: current } = found;
+            return [
+                {
+                    optionSet: { id: optionSet.id, name: optionSet.name },
+                    option: current,
+                    toCode: option.code,
+                },
+            ];
+        });
     }
 
     private getOptionSetValidators(
         optionSets: OptionSet[],
         options: UseCaseOptions
-    ): ValidationOptionSetResponse & { optionSets: OptionSet[] } {
+    ): Omit<ValidationOptionSetResponse, "proposedChanges"> & { optionSets: OptionSet[] } {
         const serviceCodes = options.services.map(service => service.code);
         const optionSetsWithCategory = OptionSet.buildWithCategory(optionSets, serviceCodes);
         const { unknown, toValidate } = this.splitOptionSets(optionSetsWithCategory, options.mode);
@@ -61,25 +87,6 @@ export class ValidateOptionSetsUseCase {
         const unknown = OptionSet.getUnknown(optionSets);
         const toValidate = optionSets.filter(optionSet => !unknown.some(u => u.id === optionSet.id));
         return { unknown, toValidate };
-    }
-
-    private async saveOptions(
-        options: UseCaseOptions,
-        optionSets: OptionSet[],
-        validationResults: OptionSetValidator[]
-    ): Async<void> {
-        if (!options.update) return;
-
-        const optionsToSave = this.fixAndGetOptions(optionSets, validationResults, options.mode);
-        const optionSetsToSave = this.fixAndGetOptionSets(optionSets, validationResults);
-
-        logger.debug(`Options to update: ${optionSetsToSave.length}`);
-
-        await this.optionSetRepository.save(optionSetsToSave, { dryRun: !options.update });
-
-        await promiseMap(optionsToSave, async option => {
-            await this.optionRepository.save(option, { dryRun: !options.update });
-        });
     }
 
     private fixAndGetOptions(
@@ -157,4 +164,11 @@ type UseCaseOptions = {
 export type ValidationOptionSetResponse = {
     optionSetValidations: OptionSetValidator[];
     unknown: OptionSet[];
+    proposedChanges: ProposedOptionChange[];
+};
+
+export type ProposedOptionChange = {
+    optionSet: { id: string; name: string };
+    option: Option;
+    toCode: string;
 };

@@ -6,7 +6,7 @@ import { getApiUrlOptions, getD2ApiFromArgs } from "scripts/common";
 import { ValidateOptionSetsUseCase } from "domain/usecases/ValidateOptionSetsUseCase";
 import { OptionSetD2Repository } from "data/OptionSetD2Repository";
 import logger from "utils/log";
-import { OptionD2Repository } from "data/OptionD2Repository";
+import { writeProposedMapping } from "data/OptionCodeMappingCsv";
 import { Maybe } from "utils/ts-utils";
 import { Service } from "domain/entities/Service";
 import { OptionSetValidatorReport } from "./OptionReport";
@@ -29,9 +29,15 @@ export const analyzeOptionsCmd = command({
             description: "Path to save the report with unknown optionSets",
             defaultValue: () => "unknown-optionset-report.csv",
         }),
+        mappingPath: option({
+            type: string,
+            long: "mapping-path",
+            description: "Path to save the proposed option code changes, to apply with `options recode`",
+            defaultValue: () => "option-code-changes.csv",
+        }),
         update: flag({
             long: "update",
-            description: "Persist changes",
+            description: "Persist option set codes (option codes are applied with `options recode`)",
             defaultValue: () => false,
             type: boolean,
         }),
@@ -73,12 +79,7 @@ export const analyzeOptionsCmd = command({
 
         const api = getD2ApiFromArgs(args);
         const optionSetRepository = new OptionSetD2Repository(api);
-        const optionRepository = new OptionD2Repository(api);
-
-        const optionSetValidations = await new ValidateOptionSetsUseCase(
-            optionSetRepository,
-            optionRepository
-        ).execute({
+        const optionSetValidations = await new ValidateOptionSetsUseCase(optionSetRepository).execute({
             update: args.update,
             mode,
             services,
@@ -95,6 +96,10 @@ export const analyzeOptionsCmd = command({
         } else {
             logger.info("No invalid options found");
         }
+
+        await writeProposedMapping(args.mappingPath, optionSetValidations.proposedChanges);
+        const count = optionSetValidations.proposedChanges.length;
+        logger.info(`Proposed option code changes (${count}): ${args.mappingPath}`);
     },
 });
 

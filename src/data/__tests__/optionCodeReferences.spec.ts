@@ -1,131 +1,87 @@
 import { describe, expect, it } from "vitest";
-import {
-    expressionReferencesCode,
-    objectReferencesCode,
-    recodeFields,
-    replaceCodeInExpression,
-} from "data/optionCodeReferences";
+import { findQuotedCodes, ItemRefs, recodeExpression, referencesItems } from "data/optionCodeReferences";
 
-const dataElement = "#{gqLxLWF3rFi.BFJO2Lwn64g}";
+const DE = "lCoJD1K1cm0";
+const OTHER_DE = "pV6GZChjIuj";
+const TEA = "OcaSynTeaPe";
+const item = `#{Ky97KUZnlK8.${DE}}`;
+const otherItem = `#{Ky97KUZnlK8.${OTHER_DE}}`;
 
-type ProgramIndicator = { id: string; name: string; expression: string; filter: string };
+const refs: ItemRefs = { dataElementIds: [DE], attributeIds: [TEA], variableNames: ["precip event"] };
+// Chained mapping of Precipitating Event: 13 -> 1 while 1 -> 2.
+const mapping = { "13": "1", "1": "2", "[F-HI]": "F-HI" };
 
-const programIndicatorFields = ["expression", "filter"] as const;
+const recode = (expression: string, options = {}) => recodeExpression(expression, refs, mapping, options);
 
-function createProgramIndicator(attrs: Partial<ProgramIndicator> = {}): ProgramIndicator {
-    return {
-        id: "Ptb5WPyuhqB",
-        name: "ZZTEST PI meningitis",
-        expression: "V{event_count}",
-        filter: `${dataElement} == '[F-HI]'`,
-        ...attrs,
-    };
-}
-
-describe("replaceCodeInExpression", () => {
-    it("replaces a code with square brackets", () => {
-        const expression = replaceCodeInExpression(`${dataElement} == '[F-HI]'`, "[F-HI]", "F-HI");
-        expect(expression).toBe(`${dataElement} == 'F-HI'`);
+describe("recodeExpression", () => {
+    it("recodes a code compared with a data element of the set", () => {
+        expect(recode(`${item} == '13'`).value).toBe(`${item} == '1'`);
     });
 
-    it("replaces a code with a hyphen", () => {
-        const expression = replaceCodeInExpression(`${dataElement} == 'O-MEN'`, "O-MEN", "O_MEN");
-        expect(expression).toBe(`${dataElement} == 'O_MEN'`);
+    it("recodes != comparisons, double quotes and the reversed form", () => {
+        expect(recode(`${item} != "13" && '13' == ${item}`).value).toBe(`${item} != "1" && '1' == ${item}`);
     });
 
-    it("replaces every occurrence, leaving the other codes untouched", () => {
-        const filter = `${dataElement} == '[F-HI]' || ${dataElement} == '[23]' || ${dataElement} == '[F-HI]'`;
+    it("recodes a chained mapping in a single pass", () => {
+        expect(recode(`${item} == '13' || ${item} == '1'`).value).toBe(`${item} == '1' || ${item} == '2'`);
+    });
 
-        expect(replaceCodeInExpression(filter, "[F-HI]", "F-HI")).toBe(
-            `${dataElement} == 'F-HI' || ${dataElement} == '[23]' || ${dataElement} == 'F-HI'`
+    it("does not recode a code compared with an item of another option set", () => {
+        const result = recode(`${otherItem} == '1' && ${item} == '13'`);
+        expect(result.value).toBe(`${otherItem} == '1' && ${item} == '1'`);
+        expect(result.review).toEqual(["1"]);
+    });
+
+    it("recodes d2:countIfValue on an item of the set", () => {
+        expect(recode(`d2:countIfValue(${item}, '13')`).value).toBe(`d2:countIfValue(${item}, '1')`);
+    });
+
+    it("recodes data elements without stage, attributes and program rule variables", () => {
+        expect(recode(`#{${DE}} == '13'`).value).toBe(`#{${DE}} == '1'`);
+        expect(recode(`A{${TEA}} == '13'`).value).toBe(`A{${TEA}} == '1'`);
+        expect(recode(`#{precip event} == '13' || A{precip event} == '1'`).value).toBe(
+            `#{precip event} == '1' || A{precip event} == '2'`
         );
     });
 
-    it("replaces codes quoted with double quotes", () => {
-        const expression = replaceCodeInExpression(`${dataElement} == "[23]"`, "[23]", "23");
-        expect(expression).toBe(`${dataElement} == "23"`);
+    it("escapes regexp characters in codes and variable names", () => {
+        expect(recode(`${item} == '[F-HI]'`).value).toBe(`${item} == 'F-HI'`);
     });
 
-    it("does not replace the code when it appears inside another token", () => {
-        const filter = `${dataElement} == 'CHOLERA' || ${dataElement} == 'CH'`;
-
-        expect(replaceCodeInExpression(filter, "CH", "COUGH")).toBe(
-            `${dataElement} == 'CHOLERA' || ${dataElement} == 'COUGH'`
-        );
+    it("does not touch a code that merely contains a mapped code", () => {
+        expect(recode(`${item} == '113'`).value).toBe(`${item} == '113'`);
     });
 
-    it("does not replace the code when it is not quoted", () => {
-        const expression = "d2:hasValue(CH)";
-        expect(replaceCodeInExpression(expression, "CH", "COUGH")).toBe(expression);
+    it("reports a mapped code out of a comparison with an item", () => {
+        const result = recode(`d2:hasValue(${item}) && d2:concatenate('13', 'x') == 'y'`);
+        expect(result.value).toBe(`d2:hasValue(${item}) && d2:concatenate('13', 'x') == 'y'`);
+        expect(result.review).toEqual(["13"]);
     });
 
-    it("does not replace the code across mixed quotes", () => {
-        const expression = `${dataElement} == '[23]"`;
-        expect(replaceCodeInExpression(expression, "[23]", "23")).toBe(expression);
+    it("recodes the whole literal of an action assigned to an item of the set", () => {
+        expect(recode(`'13'`, { isAssignedToItem: true }).value).toBe(`'1'`);
+        expect(recode(`'13'`).value).toBe(`'13'`);
     });
 
-    it("returns the expression as it is when the code is empty", () => {
-        const expression = `${dataElement} == '[23]'`;
-        expect(replaceCodeInExpression(expression, "", "23")).toBe(expression);
-    });
-});
-
-describe("expressionReferencesCode", () => {
-    it("is true for a quoted code", () => {
-        expect(expressionReferencesCode(`${dataElement} == '[F-HI]'`, "[F-HI]")).toBe(true);
-    });
-
-    it("is false when the code only appears inside another token", () => {
-        expect(expressionReferencesCode(`${dataElement} == 'CHOLERA'`, "CH")).toBe(false);
-    });
-
-    it("is false for an empty code", () => {
-        expect(expressionReferencesCode(`${dataElement} == ''`, "")).toBe(false);
-    });
-});
-
-describe("recodeFields", () => {
-    it("recodes only the given fields and keeps the rest of the object", () => {
-        const programIndicator = createProgramIndicator({ expression: "V{event_count} + 1" });
-
-        expect(recodeFields(programIndicator, programIndicatorFields, "[F-HI]", "F-HI")).toEqual({
-            id: "Ptb5WPyuhqB",
-            name: "ZZTEST PI meningitis",
-            expression: "V{event_count} + 1",
-            filter: `${dataElement} == 'F-HI'`,
-        });
-    });
-
-    it("returns the same object reference when no field changes", () => {
-        const programIndicator = createProgramIndicator();
-
-        expect(recodeFields(programIndicator, programIndicatorFields, "[23]", "23")).toBe(
-            programIndicator
-        );
-    });
-
-    it("ignores fields that are not present in the object", () => {
-        type ProgramRuleAction = { id: string; data?: string; content: string };
-        const programRuleAction: ProgramRuleAction = {
-            id: "EeAK4zSJ4WT",
-            content: "Outbreak code 'O-MEN' detected",
-        };
-
-        expect(recodeFields(programRuleAction, ["data", "content"], "O-MEN", "O_MEN")).toEqual({
-            id: "EeAK4zSJ4WT",
-            content: "Outbreak code 'O_MEN' detected",
+    it("returns the expression as it is when there are no items", () => {
+        const none = { dataElementIds: [], attributeIds: [], variableNames: [] };
+        expect(recodeExpression(`${item} == '13'`, none, mapping)).toEqual({
+            value: `${item} == '13'`,
+            review: [],
         });
     });
 });
 
-describe("objectReferencesCode", () => {
-    it("is true when any of the fields references the code", () => {
-        const programIndicator = createProgramIndicator();
-        expect(objectReferencesCode(programIndicator, programIndicatorFields, "[F-HI]")).toBe(true);
+describe("referencesItems", () => {
+    it("detects an item of the set", () => {
+        expect(referencesItems(`${item} == '1'`, refs)).toBe(true);
+        expect(referencesItems(`${otherItem} == '1'`, refs)).toBe(false);
+        expect(referencesItems(undefined, refs)).toBe(false);
     });
+});
 
-    it("is false when no field references the code", () => {
-        const programIndicator = createProgramIndicator();
-        expect(objectReferencesCode(programIndicator, programIndicatorFields, "SEVERE")).toBe(false);
+describe("findQuotedCodes", () => {
+    it("finds the quoted codes of the mapping in a free text", () => {
+        expect(findQuotedCodes("Code '13' or \"1\" selected, not '5'", mapping)).toEqual(["13", "1"]);
     });
 });
