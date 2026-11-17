@@ -10,14 +10,22 @@ import { Id } from "./Base";
  * and swaps, as long as the final codes of the set are unique.
  */
 
+/**
+ * A row of the mapping: proposed by `options analyze`, or read from a mapping file for
+ * `options recode`.
+ */
 export type OptionCodeChange = {
-    /** Line in the source file, 1 being the header. */
-    row: number;
+    /** Line in the source file, 1 being the header. Undefined when the change was not read from a file. */
+    row?: number;
     optionSetId: Id;
     optionId: Id;
     fromCode: string;
     toCode: string;
-    changeType: string;
+    /** Undefined when the source has no change type: a plain recode. */
+    changeType?: ChangeType;
+    /** Labels for a human reviewer, not used to apply the change. */
+    optionSetName?: string;
+    optionName?: string;
 };
 
 export type MappingOption = { id: Id; name: string; code: string };
@@ -42,8 +50,18 @@ export type ChangeResult = {
     optionName: string;
 };
 
-export const CHANGE_TYPE_NO_CHANGE = "NO_CHANGE";
-export const CHANGE_TYPE_TO_BE_CONFIRMED = "RECODE_TBC";
+/**
+ * - `RECODE`, `BRACKETS_ONLY` (from the client file) and `PROPOSED` (from `options analyze`): applied.
+ * - `RECODE_TBC`: to be confirmed by the client, applied only when explicitly included.
+ * - `NO_CHANGE`: skipped.
+ */
+export const changeTypes = ["RECODE", "BRACKETS_ONLY", "PROPOSED", "RECODE_TBC", "NO_CHANGE"] as const;
+
+export type ChangeType = typeof changeTypes[number];
+
+export function isChangeType(value: string): value is ChangeType {
+    return (changeTypes as readonly string[]).includes(value);
+}
 
 export function buildRecodePlans(
     changes: OptionCodeChange[],
@@ -67,9 +85,9 @@ export function buildRecodePlans(
             optionName: found?.option.name ?? "",
         });
 
-        if (change.changeType === CHANGE_TYPE_NO_CHANGE || change.fromCode === change.toCode)
+        if (change.changeType === "NO_CHANGE" || change.fromCode === change.toCode)
             return result("skipped", "no change");
-        if (change.changeType === CHANGE_TYPE_TO_BE_CONFIRMED && !options.includeToBeConfirmed)
+        if (change.changeType === "RECODE_TBC" && !options.includeToBeConfirmed)
             return result("skipped", "to be confirmed (use --include-to-be-confirmed)");
         if (!change.toCode) return result("error", "empty proposed code");
         if ((rowsByOption[change.optionId]?.length ?? 0) > 1)

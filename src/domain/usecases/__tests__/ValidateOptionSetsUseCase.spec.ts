@@ -45,7 +45,11 @@ async function executeSquareBrackets(optionSets: OptionSet[]) {
         exceptions: [],
     });
 
-    const proposed = result.proposedChanges.map(change => ({ ...change.option, code: change.toCode }));
+    const proposed = result.proposedChanges.map(({ optionId, fromCode, toCode }) => ({
+        optionId,
+        fromCode,
+        toCode,
+    }));
     return { result, proposed };
 }
 
@@ -55,12 +59,19 @@ describe("ValidateOptionSetsUseCase in square brackets mode", () => {
             { id: "option-0", name: "[O-MEN] Outbreak case - meningitis", code: "TOP" },
         ]);
 
-        const { result, proposed } = await executeSquareBrackets([optionSet]);
+        const { result } = await executeSquareBrackets([optionSet]);
 
-        expect(proposed).toEqual([
-            { id: "option-0", name: "[O-MEN] Outbreak case - meningitis", code: "O-MEN", sortOrder: 0 },
+        expect(result.proposedChanges).toEqual([
+            {
+                optionSetId: optionSet.id,
+                optionId: "option-0",
+                fromCode: "TOP",
+                toCode: "O-MEN",
+                changeType: "PROPOSED",
+                optionSetName: "Diagnosis list",
+                optionName: "[O-MEN] Outbreak case - meningitis",
+            },
         ]);
-        expect(result.proposedChanges[0]?.option.code).toBe("TOP");
     });
 
     it("leaves the unknown report empty, because the category does not apply", async () => {

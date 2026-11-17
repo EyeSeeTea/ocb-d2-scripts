@@ -6,7 +6,7 @@ import { getApiUrlOptions, getD2ApiFromArgs } from "scripts/common";
 import { ValidateOptionSetsUseCase } from "domain/usecases/ValidateOptionSetsUseCase";
 import { OptionSetD2Repository } from "data/OptionSetD2Repository";
 import logger from "utils/log";
-import { writeProposedMapping } from "data/OptionCodeMappingCsv";
+import { writeOptionCodeChanges } from "data/OptionCodeMappingCsv";
 import { Maybe } from "utils/ts-utils";
 import { Service } from "domain/entities/Service";
 import { OptionSetValidatorReport } from "./OptionReport";
@@ -97,7 +97,7 @@ export const analyzeOptionsCmd = command({
             logger.info("No invalid options found");
         }
 
-        await writeProposedMapping(args.mappingPath, optionSetValidations.proposedChanges);
+        await writeOptionCodeChanges(args.mappingPath, optionSetValidations.proposedChanges);
         const count = optionSetValidations.proposedChanges.length;
         logger.info(`Proposed option code changes (${count}): ${args.mappingPath}`);
     },

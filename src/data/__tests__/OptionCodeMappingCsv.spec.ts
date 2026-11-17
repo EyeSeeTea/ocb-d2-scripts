@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { parseCsv, parseOptionCodeChanges } from "data/OptionCodeMappingCsv";
+import { mkdtempSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import {
+    parseCsv,
+    parseOptionCodeChanges,
+    readOptionCodeChanges,
+    writeOptionCodeChanges,
+} from "data/OptionCodeMappingCsv";
+import { OptionCodeChange } from "domain/entities/OptionCodeMapping";
 
 // Shape of the client file: unquoted lists at the end spill over into extra cells.
 const clientCsv = [
@@ -19,6 +28,8 @@ describe("parseOptionCodeChanges", () => {
                 fromCode: "[99]",
                 toCode: "99",
                 changeType: "BRACKETS_ONLY",
+                optionSetName: "Birthweight category",
+                optionName: "[99] Unknown",
             },
             {
                 row: 3,
@@ -27,15 +38,42 @@ describe("parseOptionCodeChanges", () => {
                 fromCode: "110",
                 toCode: "1.10",
                 changeType: "RECODE_TBC",
+                optionSetName: "MH",
+                optionName: "[1.10] A, b",
             },
         ]);
+    });
+
+    it("reads back the changes it writes", async () => {
+        const changes: OptionCodeChange[] = [
+            {
+                optionSetId: "set",
+                optionId: "opt",
+                fromCode: "110",
+                toCode: "1.10",
+                changeType: "PROPOSED",
+                optionSetName: "MH, details",
+                optionName: '[1.10] "A"',
+            },
+        ];
+        const path = join(mkdtempSync(join(tmpdir(), "mapping-")), "mapping.csv");
+
+        await writeOptionCodeChanges(path, changes);
+
+        expect(await readOptionCodeChanges(path)).toEqual([{ ...changes[0], row: 2 }]);
     });
 
     it("works without the change_type column", () => {
         const csv = "option_id,option_set_id,current_code,proposed_code\nopt,set,A,B\n";
         expect(parseOptionCodeChanges(csv)).toEqual([
-            { row: 2, optionSetId: "set", optionId: "opt", fromCode: "A", toCode: "B", changeType: "" },
+            { row: 2, optionSetId: "set", optionId: "opt", fromCode: "A", toCode: "B" },
         ]);
+    });
+
+    it("fails before any change when a change_type is unknown, listing its rows", () => {
+        const csv =
+            "option_id,option_set_id,current_code,proposed_code,change_type\no1,s,A,B,RECODE\no2,s,C,D,MAYBE\n";
+        expect(() => parseOptionCodeChanges(csv)).toThrow("unknown change_type MAYBE (row 3)");
     });
 
     it("fails when a required column is missing", () => {

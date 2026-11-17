@@ -35,7 +35,7 @@ function change(
     optionId: string,
     toCode: string,
     attrs: Partial<OptionCodeChange> = {}
-) {
+): OptionCodeChange {
     const option = optionSet.options.find(o => o.id === optionId);
     return {
         row: ++row,

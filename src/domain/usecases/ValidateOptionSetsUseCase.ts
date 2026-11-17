@@ -4,6 +4,7 @@ import { OptionSetRepository } from "domain/repositories/OptionSetRepository";
 import { Async } from "domain/entities/Async";
 import { Option } from "domain/entities/Option";
 import { OptionSetValidator, ValidationMode } from "domain/entities/OptionSetValidator";
+import { OptionCodeChange } from "domain/entities/OptionCodeMapping";
 import { Exceptions, Project, Service } from "domain/entities/Service";
 import logger from "utils/log";
 import { Maybe } from "utils/ts-utils";
@@ -37,7 +38,7 @@ export class ValidateOptionSetsUseCase {
         optionSets: OptionSet[],
         validationResults: OptionSetValidator[],
         mode: ValidationMode
-    ): ProposedOptionChange[] {
+    ): OptionCodeChange[] {
         const byOptionId = new Map(
             optionSets.flatMap(optionSet =>
                 optionSet.options.map(option => [option.id, { optionSet, option }])
@@ -48,13 +49,16 @@ export class ValidateOptionSetsUseCase {
             const found = byOptionId.get(option.id);
             if (!found) return [];
             const { optionSet, option: current } = found;
-            return [
-                {
-                    optionSet: { id: optionSet.id, name: optionSet.name },
-                    option: current,
-                    toCode: option.code,
-                },
-            ];
+            const change: OptionCodeChange = {
+                optionSetId: optionSet.id,
+                optionId: current.id,
+                fromCode: current.code,
+                toCode: option.code,
+                changeType: "PROPOSED",
+                optionSetName: optionSet.name,
+                optionName: current.name,
+            };
+            return [change];
         });
     }
 
@@ -164,11 +168,5 @@ type UseCaseOptions = {
 export type ValidationOptionSetResponse = {
     optionSetValidations: OptionSetValidator[];
     unknown: OptionSet[];
-    proposedChanges: ProposedOptionChange[];
-};
-
-export type ProposedOptionChange = {
-    optionSet: { id: string; name: string };
-    option: Option;
-    toCode: string;
+    proposedChanges: OptionCodeChange[];
 };

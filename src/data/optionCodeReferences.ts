@@ -13,7 +13,9 @@ import { CodeMapping, recodeValue } from "domain/entities/OptionCodeMapping";
  *   - `ITEM == 'CODE'`, `ITEM != 'CODE'`, and the reversed `'CODE' == ITEM`
  *   - `d2:countIfValue(ITEM, 'CODE')`
  *
- * where ITEM is a data element (`#{stage.de}`, `#{de}`), an attribute (`A{tea}`) or a program rule
+ * where ITEM is a data element (`#{stage.de}` in program expressions; `#{de}`, `#{de.coc}`,
+ * `#{de.coc.aoc}` in aggregate ones: indicators, validation rules, predictors), an attribute
+ * (`A{tea}`) or a program rule
  * variable bound to one of them (`#{name}`, `A{name}`). Any other literal of a mapped code in an
  * expression that references the items is left as it is and reported for manual review.
  *
@@ -97,7 +99,10 @@ export function findQuotedCodes(text: string | undefined, mapping: CodeMapping):
 function getItemRegExpSource(refs: ItemRefs): string | undefined {
     const uid = "[A-Za-z][A-Za-z0-9]{10}";
     const alternatives = [
-        ...refs.dataElementIds.map(id => `#\\{(?:${uid}\\.)?${escapeRegExp(id)}\\}`),
+        // `#{stage.de}`, `#{de}` and `#{de.coc}` / `#{de.coc.aoc}` (`*` for any combo).
+        ...refs.dataElementIds.map(
+            id => `#\\{(?:${uid}\\.)?${escapeRegExp(id)}(?:\\.(?:${uid}|\\*)){0,2}\\}`
+        ),
         ...refs.attributeIds.map(id => `A\\{${escapeRegExp(id)}\\}`),
         ...refs.variableNames.map(name => `[#A]\\{${escapeRegExp(name)}\\}`),
     ];

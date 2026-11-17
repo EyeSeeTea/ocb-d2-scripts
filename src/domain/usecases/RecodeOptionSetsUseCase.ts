@@ -32,9 +32,9 @@ export class RecodeOptionSetsUseCase {
         const failures: Record<string, string> = {};
 
         for (const plan of plans) {
-            const summary = await this.recodePlan(plan, options);
-            if (typeof summary === "string") failures[plan.optionSet.id] = summary || "unknown error";
-            else summaries.push(summary);
+            const outcome = await this.recodePlan(plan, options);
+            if (outcome.type === "recoded") summaries.push(outcome.summary);
+            else failures[plan.optionSet.id] = outcome.error || "unknown error";
         }
 
         const finalResults = results.map((result): ChangeResult => {
@@ -47,22 +47,23 @@ export class RecodeOptionSetsUseCase {
         return { results: finalResults, summaries };
     }
 
-    private async recodePlan(
-        plan: OptionSetRecodePlan,
-        options: RecodeOptions
-    ): Async<RecodeSummary | string> {
+    private async recodePlan(plan: OptionSetRecodePlan, options: RecodeOptions): Async<PlanOutcome> {
         const { optionSet } = plan;
         logger.info(`Recode option set ${optionSet.name} [${optionSet.id}]: ${plan.changes.length} changes`);
 
         try {
-            return await this.recodeRepository.recode(plan, { dryRun: !options.update });
+            const summary = await this.recodeRepository.recode(plan, { dryRun: !options.update });
+            return { type: "recoded", summary };
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             logger.error(`Option set ${optionSet.name} [${optionSet.id}] not recoded: ${message}`);
-            return message;
+            return { type: "failed", error: message };
         }
     }
 }
+
+/** A failed option set has been rolled back by the repository; the others go on. */
+type PlanOutcome = { type: "recoded"; summary: RecodeSummary } | { type: "failed"; error: string };
 
 type RecodeOptions = {
     changes: OptionCodeChange[];

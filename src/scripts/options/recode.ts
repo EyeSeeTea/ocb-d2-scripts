@@ -24,6 +24,13 @@ export const recodeOptionsCmd = command({
             description: "Path to save the report (a -summary.csv is written next to it)",
             defaultValue: () => "option-recode-report.csv",
         }),
+        backupDir: option({
+            type: string,
+            long: "backup-dir",
+            description:
+                "Directory for the backups of the initial state of each option set (created if needed)",
+            defaultValue: () => ".",
+        }),
         includeToBeConfirmed: flag({
             long: "include-to-be-confirmed",
             description: "Also apply the rows with change_type RECODE_TBC",
@@ -43,7 +50,7 @@ export const recodeOptionsCmd = command({
 
         const { results, summaries } = await new RecodeOptionSetsUseCase(
             new OptionSetD2Repository(api),
-            new OptionSetRecodeD2Repository(api)
+            new OptionSetRecodeD2Repository(api, { backupDir: args.backupDir })
         ).execute({
             changes,
             includeToBeConfirmed: args.includeToBeConfirmed,

@@ -85,3 +85,24 @@ describe("findQuotedCodes", () => {
         expect(findQuotedCodes("Code '13' or \"1\" selected, not '5'", mapping)).toEqual(["13", "1"]);
     });
 });
+
+describe("recodeExpression in aggregate expressions", () => {
+    const aggregateRefs: ItemRefs = { dataElementIds: [DE], attributeIds: [], variableNames: [] };
+    const recodeAggregate = (expression: string) => recodeExpression(expression, aggregateRefs, mapping);
+
+    it("recodes a code compared with an aggregate data element, with or without combos", () => {
+        expect(recodeAggregate(`if(#{${DE}} == '13', 1, 0)`).value).toBe(`if(#{${DE}} == '1', 1, 0)`);
+        expect(recodeAggregate(`if(#{${DE}.HllvX50cXC0} == '13', 1, 0)`).value).toBe(
+            `if(#{${DE}.HllvX50cXC0} == '1', 1, 0)`
+        );
+        expect(recodeAggregate(`if(#{${DE}.*.HllvX50cXC0} != "1", 1, 0)`).value).toBe(
+            `if(#{${DE}.*.HllvX50cXC0} != "2", 1, 0)`
+        );
+    });
+
+    it("does not recode a code compared with another data element", () => {
+        expect(recodeAggregate(`if(#{${OTHER_DE}.HllvX50cXC0} == '13', 1, 0)`).value).toBe(
+            `if(#{${OTHER_DE}.HllvX50cXC0} == '13', 1, 0)`
+        );
+    });
+});

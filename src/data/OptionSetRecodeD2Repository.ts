@@ -7,6 +7,7 @@ import {
     OptionSetRecodeRepository,
     RecodeCounts,
     RecodeSummary,
+    ReviewItem,
 } from "domain/repositories/OptionSetRecodeRepository";
 import logger from "utils/log";
 import { saveJsonToDisk } from "./files";
@@ -17,8 +18,10 @@ import { findLikeFilters, recodeDimensionCollections, recodeQueryCriteria } from
  * Recode an option set as a whole, from a mapping of codes, together with every reference to them:
  *
  * - Data: aggregate data values and tracker event data values of the data elements of the set.
- * - Program metadata: quoted codes compared with the items of the set in programIndicators
- *   (expression, filter), programRules (condition) and programRuleActions (data).
+ * - Expressions: quoted codes compared with the items of the set in programIndicators (expression,
+ *   filter), programRules (condition), programRuleActions (data), and in the aggregate expressions
+ *   of indicators (numerator, denominator), validationRules (leftSide, rightSide) and predictors
+ *   (generator, sampleSkipTest), which can compare an aggregate data element with a code.
  * - Analytics metadata: dimension filters of the items in eventVisualizations, and query criteria of
  *   eventFilters.
  *
@@ -28,12 +31,13 @@ import { findLikeFilters, recodeDimensionCollections, recodeQueryCriteria } from
  * step fails.
  *
  * Not recoded (reported in the summary for manual review): tracked entity attribute values, codes in
- * free texts (programRuleAction content) or in expressions out of a comparison with an item, `like`
- * filters, and mapViews: on DHIS2 2.40 a mapView posted on its own is accepted but not saved, and
+ * free texts (programRuleAction content, sqlView queries and custom form code that mention an item
+ * of the set) or in expressions out of a comparison with an item, `like` filters, and mapViews: on DHIS2 2.40 a mapView posted on its own is accepted but not saved, and
  * a map PUT recreates its mapViews without their dimension filters.
  */
 export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
-    constructor(private api: D2Api) {}
+    /** `backupDir`: where the initial state of each option set is saved before it is recoded. */
+    constructor(private api: D2Api, private options: { backupDir: string }) {}
 
     async recode(plan: OptionSetRecodePlan, options: { dryRun: boolean }): Async<RecodeSummary> {
         const { optionSet } = plan;
@@ -41,10 +45,15 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
         const initial = await this.getInitialState(plan, items);
         const { state: recoded, review } = this.recodeState(initial, plan, items);
 
-        if (items.attributes.length > 0) {
-            const names = items.attributes.map(attribute => attribute.name).join(", ");
-            review.push(`trackedEntityAttribute values are not recoded: ${names}`);
-        }
+        items.attributes.forEach(attribute =>
+            review.push({
+                model: "trackedEntityAttribute",
+                id: attribute.id,
+                name: attribute.name,
+                field: "values",
+                detail: "values are not recoded",
+            })
+        );
 
         const summary: RecodeSummary = {
             optionSetId: optionSet.id,
@@ -53,11 +62,14 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
             review: review,
         };
         logger.info(`[${optionSet.name}] ${JSON.stringify(summary.counts)}`);
-        review.forEach(item => logger.warn(`[${optionSet.name}] Review: ${item}`));
+        review.forEach(item => logger.warn(`[${optionSet.name}] Review: ${formatReviewItem(item)}`));
 
-        if (options.dryRun) return summary;
+        if (options.dryRun) {
+            await this.validate(plan, initial, recoded);
+            return summary;
+        }
 
-        const backupPath = saveJsonToDisk(`recode_${optionSet.id}`, initial);
+        const backupPath = saveJsonToDisk(`recode_${optionSet.id}`, initial, this.options.backupDir);
         logger.info(`[${optionSet.name}] Initial state saved: ${backupPath}`);
 
         try {
@@ -142,6 +154,23 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
             action => action.id
         );
 
+        const dataElementIds = ids(items.dataElements);
+        const like = (fields: string[], values: Id[]) =>
+            values.flatMap(value => fields.map(field => `${field}:like:${value}`));
+        const getByText = (model: string, fields: string[], values: Id[], fieldsParam = ":owner") =>
+            this.getObjects<D2Object>(model, like(fields, values), fieldsParam, {
+                skipIfEmpty: values,
+                rootJunction: "OR",
+            });
+
+        const [indicators, validationRules, predictors, sqlViews, dataEntryForms] = await Promise.all([
+            getByText("indicators", ["numerator", "denominator"], dataElementIds),
+            getByText("validationRules", ["leftSide.expression", "rightSide.expression"], dataElementIds),
+            getByText("predictors", ["generator.expression", "sampleSkipTest.expression"], dataElementIds),
+            getByText("sqlViews", ["sqlQuery"], [...itemIds, plan.optionSet.id], "id,name,sqlQuery"),
+            getByText("dataEntryForms", ["htmlCode"], itemIds, "id,name,htmlCode"),
+        ]);
+
         // A programIndicator dimension holds a code only when the indicator returns an item of the set.
         const valueIndicatorIds = programIndicators
             .filter(indicator => referencesItems(indicator.expression as string | undefined, refs))
@@ -176,9 +205,14 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
             programIndicators,
             programRules,
             programRuleActions,
+            indicators,
+            validationRules,
+            predictors,
             eventVisualizations,
             mapViews,
             eventFilters,
+            sqlViews,
+            dataEntryForms,
         };
     }
 
@@ -304,9 +338,9 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
         initial: State,
         plan: OptionSetRecodePlan,
         items: Items
-    ): { state: State; review: string[] } {
+    ): { state: State; review: ReviewItem[] } {
         const { mapping } = plan;
-        const review: string[] = [];
+        const review: ReviewItem[] = [];
         const itemIds = pick(items);
         const ruleProgram = _(initial.programRules)
             .map(rule => [rule.id, (rule.program as Ref | undefined)?.id ?? ""] as const)
@@ -324,7 +358,7 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
             object: D2Object,
             fields: string[],
             refs: ItemRefs,
-            model: string,
+            model: ReviewItem["model"],
             isAssigned = false
         ) =>
             fields.reduce((acc, field) => {
@@ -332,11 +366,13 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
                     isAssignedToItem: isAssigned,
                 });
                 if (result.review.length > 0)
-                    review.push(
-                        `${model} ${String(object.name ?? "")} [${object.id}] ${field}: ${result.review.join(
-                            ", "
-                        )}`
-                    );
+                    review.push({
+                        model,
+                        id: object.id,
+                        name: String(object.name ?? ""),
+                        field,
+                        detail: result.review.join(", "),
+                    });
                 return result.value === (acc[field] ?? "") ? acc : { ...acc, [field]: result.value };
             }, object);
 
@@ -365,9 +401,70 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
             const recoded = recodeFields(action, ["data"], refs, "programRuleAction", isAssigned);
             const contentCodes = findQuotedCodes(action.content as string | undefined, mapping);
             if (contentCodes.length > 0 && (isAssigned || recoded !== action))
-                review.push(`programRuleAction [${action.id}] content: ${contentCodes.join(", ")}`);
+                review.push({
+                    model: "programRuleAction",
+                    id: action.id,
+                    name: "",
+                    field: "content",
+                    detail: contentCodes.join(", "),
+                });
             return recoded;
         });
+
+        // Aggregate expressions: the items are the data elements (`#{de}`, `#{de.coc}`).
+        const aggregateRefs = getItemRefs(items, []);
+        const recodeNested = (object: D2Object, paths: Array<[string, string]>, model: ReviewItem["model"]) =>
+            paths.reduce((acc, [parent, field]) => {
+                const container = acc[parent] as Record<string, unknown> | undefined;
+                if (!container) return acc;
+                // Recoded under its full path, so that a review item names `leftSide.expression`.
+                const path = `${parent}.${field}`;
+                const flat = { id: object.id, name: object.name, [path]: container[field] };
+                const recoded = recodeFields(flat, [path], aggregateRefs, model);
+                return recoded === flat
+                    ? acc
+                    : { ...acc, [parent]: { ...container, [field]: recoded[path] } };
+            }, object);
+
+        const indicators = initial.indicators.map(indicator =>
+            recodeFields(indicator, ["numerator", "denominator"], aggregateRefs, "indicator")
+        );
+        const validationRules = initial.validationRules.map(rule =>
+            recodeNested(
+                rule,
+                [
+                    ["leftSide", "expression"],
+                    ["rightSide", "expression"],
+                ],
+                "validationRule"
+            )
+        );
+        const predictors = initial.predictors.map(predictor =>
+            recodeNested(
+                predictor,
+                [
+                    ["generator", "expression"],
+                    ["sampleSkipTest", "expression"],
+                ],
+                "predictor"
+            )
+        );
+
+        // Free texts (SQL, HTML/JS): reported when they mention an item of the set and a quoted code.
+        const reportText = (objects: D2Object[], field: string, model: ReviewItem["model"]) =>
+            objects.forEach(object => {
+                const codes = findQuotedCodes(object[field] as string | undefined, mapping);
+                if (codes.length > 0)
+                    review.push({
+                        model,
+                        id: object.id,
+                        name: String(object.name ?? ""),
+                        field,
+                        detail: codes.join(", "),
+                    });
+            });
+        reportText(initial.sqlViews, "sqlQuery", "sqlView");
+        reportText(initial.dataEntryForms, "htmlCode", "dataEntryForm");
 
         const valueIndicatorIds = initial.programIndicators
             .filter(indicator =>
@@ -380,9 +477,13 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
 
         const eventFilters = initial.eventFilters.map(eventFilter => {
             findLikeFilters(eventFilter.eventQueryCriteria, itemIds).forEach(filter =>
-                review.push(
-                    `eventFilter ${String(eventFilter.name ?? "")} [${eventFilter.id}] like: ${filter.like}`
-                )
+                review.push({
+                    model: "eventFilter",
+                    id: eventFilter.id,
+                    name: String(eventFilter.name ?? ""),
+                    field: "eventQueryCriteria",
+                    detail: `like: ${filter.like}`,
+                })
             );
             const criteria = recodeQueryCriteria(eventFilter.eventQueryCriteria, itemIds, mapping);
             return criteria === eventFilter.eventQueryCriteria
@@ -407,19 +508,30 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
             programIndicators: changedOnly(programIndicators, initial.programIndicators),
             programRules: changedOnly(programRules, initial.programRules),
             programRuleActions: changedOnly(programRuleActions, initial.programRuleActions),
+            indicators: changedOnly(indicators, initial.indicators),
+            validationRules: changedOnly(validationRules, initial.validationRules),
+            predictors: changedOnly(predictors, initial.predictors),
             eventVisualizations: changedOnly(
                 initial.eventVisualizations.map(recodeDimensions),
                 initial.eventVisualizations
             ),
             mapViews: changedOnly(initial.mapViews.map(recodeDimensions), initial.mapViews),
             eventFilters: changedOnly(eventFilters, initial.eventFilters),
+            sqlViews: [],
+            dataEntryForms: [],
         };
 
         state.mapViews.forEach(mapView =>
-            review.push(`mapView [${mapView.id}] filters must be updated by hand in the Maps app`)
+            review.push({
+                model: "mapView",
+                id: mapView.id,
+                name: "",
+                field: "filters",
+                detail: "update by hand in the Maps app",
+            })
         );
 
-        return { state, review: _.uniq(review) };
+        return { state, review: _.uniqWith(review, _.isEqual) };
     }
 
     /* Persist */
@@ -427,10 +539,48 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
     private async apply(plan: OptionSetRecodePlan, state: State): Async<void> {
         const name = plan.optionSet.name;
         await this.saveOptions(plan, state.options);
-        await this.postMetadata(name, "program metadata", _.pick(state, PROGRAM_MODELS));
+        await this.postMetadata(name, "expression metadata", _.pick(state, EXPRESSION_MODELS));
         await this.postMetadata(name, "analytics metadata", _.pick(state, ANALYTICS_MODELS));
         await this.postDataValues(name, state.dataValues);
         await this.postEvents(name, state.events);
+    }
+
+    /**
+     * Dry run: ask the server to validate every import of the option set, without saving, so that a
+     * rejection (an event whose org unit is no longer in the program, a locked period...) shows up
+     * before the update. Every step is validated and all failures are reported together.
+     *
+     * - Options: when the plan needs temporary codes, the target codes are still held on the server,
+     *   so the temporary step is validated (the uniqueness of the final codes is checked in the plan).
+     * - Data values and events are validated with their current values: the recoded ones are not
+     *   option codes yet, so they would be rejected for that reason alone. Any other reason for a
+     *   rejection is the same with either value.
+     */
+    private async validate(plan: OptionSetRecodePlan, initial: State, recoded: State): Async<void> {
+        const name = plan.optionSet.name;
+        const options = needsTemporaryCodes(plan) ? withTemporaryCodes(recoded.options) : recoded.options;
+        const mode = "VALIDATE";
+        const steps: Array<[string, () => Async<void>]> = [
+            ["options", () => this.postMetadata(name, "options", { options }, mode)],
+            [
+                "expression metadata",
+                () =>
+                    this.postMetadata(name, "expression metadata", _.pick(recoded, EXPRESSION_MODELS), mode),
+            ],
+            [
+                "analytics metadata",
+                () => this.postMetadata(name, "analytics metadata", _.pick(recoded, ANALYTICS_MODELS), mode),
+            ],
+            ["dataValues", () => this.postDataValues(name, initial.dataValues, mode)],
+            ["events", () => this.postEvents(name, initial.events, mode)],
+        ];
+
+        const failures: string[] = [];
+        for (const [step, run] of steps) {
+            await run().catch(err => failures.push(`${step}: ${getErrorMessage(err)}`));
+        }
+        if (failures.length > 0) throw new Error(`Validation failed. ${failures.join(" / ")}`);
+        logger.info(`[${name}] Validated on the server`);
     }
 
     /**
@@ -454,8 +604,8 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
                 () => this.postMetadata(name, "analytics metadata", originals(ANALYTICS_MODELS)),
             ],
             [
-                "program metadata",
-                () => this.postMetadata(name, "program metadata", originals(PROGRAM_MODELS)),
+                "expression metadata",
+                () => this.postMetadata(name, "expression metadata", originals(EXPRESSION_MODELS)),
             ],
             ["options", () => this.saveOptions(plan, initial.options)],
         ];
@@ -470,44 +620,57 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
 
     private async saveOptions(plan: OptionSetRecodePlan, options: D2Object[]): Async<void> {
         if (needsTemporaryCodes(plan)) {
-            const temporary = options.map(option => ({
-                ...option,
-                code: `${TEMPORARY_CODE_PREFIX}${option.id}`,
-            }));
+            const temporary = withTemporaryCodes(options);
             await this.postMetadata(plan.optionSet.name, "options (temporary codes)", { options: temporary });
         }
         await this.postMetadata(plan.optionSet.name, "options", { options });
     }
 
-    private async postMetadata(name: string, label: string, payload: Record<string, unknown[]>): Async<void> {
+    private async postMetadata(
+        name: string,
+        label: string,
+        payload: Record<string, unknown[]>,
+        importMode: ImportMode = "COMMIT"
+    ): Async<void> {
         const count = _.sumBy(_.values(payload), objects => objects.length);
         if (count === 0) return;
 
         const res = await this.api
-            .post<{ status: string }>("/metadata", { atomicMode: "ALL" }, payload)
+            .post<{ status: string }>("/metadata", { atomicMode: "ALL", importMode }, payload, IMPORT_REQUEST)
             .getData();
-        logger.debug(`[${name}] Post ${label} (${count}): ${res.status}`);
-        if (res.status !== "OK") throw new Error(`Failed to save ${label}: ${JSON.stringify(res)}`);
+        logger.debug(`[${name}] Post ${label} (${count}, ${importMode}): ${res.status}`);
+        if (res.status !== "OK") throw new Error(`Failed to save ${label}: ${truncate(JSON.stringify(res))}`);
     }
 
-    private async postDataValues(name: string, dataValues: DataValue[]): Async<void> {
+    private async postDataValues(
+        name: string,
+        dataValues: DataValue[],
+        importMode: ImportMode = "COMMIT"
+    ): Async<void> {
+        const params = { dryRun: importMode === "VALIDATE" };
         for (const chunk of _.chunk(dataValues, DATA_VALUES_CHUNK_SIZE)) {
             const res = await this.api
-                .post<DataValuesResponse>("/dataValueSets", {}, { dataValues: chunk })
+                .post<DataValuesResponse>("/dataValueSets", params, { dataValues: chunk }, IMPORT_REQUEST)
                 .getData();
             const response = res.response ?? res;
             logger.debug(
                 `[${name}] Post dataValues (${chunk.length}): ${JSON.stringify(response.importCount)}`
             );
-            if (response.status === "ERROR" || (response.importCount?.ignored ?? 0) > 0)
+            // A value posted unchanged counts as `ignored` without a conflict (2.40): not an error.
+            if (response.status === "ERROR" || (response.conflicts ?? []).length > 0)
                 throw new Error(
-                    `Failed to save data values: ${JSON.stringify(response.conflicts ?? response)}`
+                    `Failed to save data values: ${truncate(JSON.stringify(response.conflicts ?? response))}`
                 );
         }
     }
 
-    private async postEvents(name: string, events: D2Event[]): Async<void> {
+    private async postEvents(
+        name: string,
+        events: D2Event[],
+        importMode: ImportMode = "COMMIT"
+    ): Async<void> {
         const params = {
+            importMode,
             async: false,
             importStrategy: "UPDATE",
             skipRuleEngine: true,
@@ -515,10 +678,11 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
         };
 
         for (const chunk of _.chunk(events, EVENTS_CHUNK_SIZE)) {
-            const res = await this.api.post<TrackerResponse>("/tracker", params, { events: chunk }).getData();
+            const res = await this.api
+                .post<TrackerResponse>("/tracker", params, { events: chunk }, IMPORT_REQUEST)
+                .getData();
             logger.debug(`[${name}] Post events (${chunk.length}): ${JSON.stringify(res.stats)}`);
-            if (res.status !== "OK")
-                throw new Error(`Failed to save events: ${JSON.stringify(res.validationReport)}`);
+            if (res.status !== "OK") throw new Error(`Failed to save events: ${summarizeTrackerErrors(res)}`);
         }
     }
 
@@ -541,6 +705,21 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
 
         return response[model] ?? [];
     }
+}
+
+/** Count per error code, with a sample message and event, instead of the whole validation report. */
+function summarizeTrackerErrors(res: TrackerResponse): string {
+    const errors = res.validationReport?.errorReports ?? [];
+    if (errors.length === 0) return truncate(JSON.stringify(res));
+
+    return _(errors)
+        .groupBy(error => error.errorCode ?? "unknown")
+        .map((group, code) => `${code} x${group.length} (e.g. ${group[0]?.uid}: ${group[0]?.message})`)
+        .join("; ");
+}
+
+function withTemporaryCodes(options: D2Object[]): D2Object[] {
+    return options.map(option => ({ ...option, code: `${TEMPORARY_CODE_PREFIX}${option.id}` }));
 }
 
 function getItemRefs(items: Items, variableNames: string[]): ItemRefs {
@@ -567,6 +746,9 @@ function getCounts(state: State): RecodeCounts {
         programIndicators: state.programIndicators.length,
         programRules: state.programRules.length,
         programRuleActions: state.programRuleActions.length,
+        indicators: state.indicators.length,
+        validationRules: state.validationRules.length,
+        predictors: state.predictors.length,
         eventVisualizations: state.eventVisualizations.length,
         mapViews: state.mapViews.length,
         eventFilters: state.eventFilters.length,
@@ -574,11 +756,29 @@ function getCounts(state: State): RecodeCounts {
 }
 
 /** d2-api errors keep the DHIS2 response in `response.data`, often with an empty `message`. */
+function formatReviewItem(item: ReviewItem): string {
+    const name = item.name ? ` ${item.name}` : "";
+    return `${item.model}${name} [${item.id}] ${item.field}: ${item.detail}`;
+}
+
 function getErrorMessage(err: unknown): string {
     const data = (err as { response?: { data?: unknown } } | undefined)?.response?.data;
     const detail = data ? JSON.stringify(data).slice(0, ERROR_DETAIL_LENGTH) : "";
     const message = err instanceof Error ? err.message : "";
     return [message, detail].filter(Boolean).join(" ") || JSON.stringify(err);
+}
+
+/**
+ * DHIS2 answers a rejected import with 409 and the import report in the body. Accepting it reads the
+ * report from the response (each caller checks its status) instead of a thrown error, which d2-api
+ * also dumps to the console with the whole request (event payloads included).
+ */
+const IMPORT_REQUEST = {
+    validateStatus: (status: number) => (status >= 200 && status < 300) || status === 409,
+};
+
+function truncate(text: string): string {
+    return text.length > ERROR_DETAIL_LENGTH ? `${text.slice(0, ERROR_DETAIL_LENGTH)}...` : text;
 }
 
 const TEMPORARY_CODE_PREFIX = "TMP_";
@@ -588,11 +788,20 @@ const EVENTS_CHUNK_SIZE = 500;
 const EVENTS_BY_ID_CHUNK_SIZE = 50;
 const DATA_VALUES_CHUNK_SIZE = 1000;
 const DIMENSION_COLLECTIONS = ["dataElementDimensions", "attributeDimensions", "programIndicatorDimensions"];
-const PROGRAM_MODELS = ["programIndicators", "programRules", "programRuleActions"] as const;
+const EXPRESSION_MODELS = [
+    "programIndicators",
+    "programRules",
+    "programRuleActions",
+    "indicators",
+    "validationRules",
+    "predictors",
+] as const;
 // mapViews are only reported (see the class comment).
 const ANALYTICS_MODELS = ["eventVisualizations", "eventFilters"] as const;
-type MetadataModel = typeof PROGRAM_MODELS[number] | typeof ANALYTICS_MODELS[number];
+type MetadataModel = typeof EXPRESSION_MODELS[number] | typeof ANALYTICS_MODELS[number];
 
+/** COMMIT saves; VALIDATE only checks the payload against the server (dry run). */
+type ImportMode = "COMMIT" | "VALIDATE";
 type Ref = { id: Id };
 type NamedRef = { id: Id; name: string };
 type DataElement = NamedRef & { domainType: "AGGREGATE" | "TRACKER" };
@@ -610,9 +819,15 @@ type State = {
     programIndicators: D2Object[];
     programRules: D2Object[];
     programRuleActions: D2Object[];
+    indicators: D2Object[];
+    validationRules: D2Object[];
+    predictors: D2Object[];
     eventVisualizations: D2Object[];
     mapViews: D2Object[];
     eventFilters: D2Object[];
+    /** Only read, to report the codes in their free text. */
+    sqlViews: D2Object[];
+    dataEntryForms: D2Object[];
 };
 
 type ImportSummary = {
@@ -621,4 +836,9 @@ type ImportSummary = {
     conflicts?: unknown[];
 };
 type DataValuesResponse = ImportSummary & { response?: ImportSummary };
-type TrackerResponse = { status: string; stats?: unknown; validationReport?: unknown };
+type TrackerError = { errorCode?: string; message?: string; uid?: string };
+type TrackerResponse = {
+    status: string;
+    stats?: unknown;
+    validationReport?: { errorReports?: TrackerError[] };
+};

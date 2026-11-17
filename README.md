@@ -132,13 +132,19 @@ Recode option codes from a mapping CSV, together with every reference to them. T
 header name, so the client file (`option-code-changes.csv`) or the one written by `analyze` can be used
 as they are; other columns are ignored:
 
-| column          | required | description                                         |
-| --------------- | -------- | --------------------------------------------------- |
-| `option_set_id` | yes      | option set of the option                            |
-| `option_id`     | yes      | option to recode                                    |
-| `current_code`  | yes      | expected code on the server                         |
-| `proposed_code` | yes      | new code                                            |
-| `change_type`   | no       | `NO_CHANGE` is skipped, `RECODE_TBC` needs the flag |
+| column            | required | description                      |
+| ----------------- | -------- | -------------------------------- |
+| `option_set_id`   | yes      | option set of the option         |
+| `option_id`       | yes      | option to recode                 |
+| `current_code`    | yes      | expected code on the server      |
+| `proposed_code`   | yes      | new code                         |
+| `change_type`     | no       | see below; empty means a recode  |
+| `option_set_name` | no       | label for the reviewer, not used |
+| `option_name`     | no       | label for the reviewer, not used |
+
+`change_type`: `RECODE`, `BRACKETS_ONLY` and `PROPOSED` (written by `analyze`) are applied, `RECODE_TBC`
+only with `--include-to-be-confirmed`, and `NO_CHANGE` is skipped. Any other value rejects the whole file
+before any change, listing its rows.
 
 ```shell
 yarn start options recode \
@@ -146,13 +152,19 @@ yarn start options recode \
     --auth='username:password or PAT token' \
     --mapping-path='option-code-changes.csv' \
     --report-path='option-recode-report.csv' \
+    --backup-dir='.' \
     --include-to-be-confirmed \
     --update
 ```
 
-Without `--update` it is a dry run. `--include-to-be-confirmed` also applies the `RECODE_TBC` rows. The
-report path shown is the default, and a `-summary.csv` with the counts per option set, the items to
-review and the backup file is written next to it.
+Without `--update` it is a dry run: nothing is saved, but every import of each option set is validated by
+the server (metadata and events with `importMode=VALIDATE`, data values with `dryRun=true`), so a rejection
+(e.g. an event whose org unit is no longer assigned to its program) is reported as `error` before the
+update. Data values and events are validated with their current values, since the new ones are not option
+codes yet. `--include-to-be-confirmed` also applies the `RECODE_TBC` rows. The
+report path and backup directory shown are the defaults. Next to the report, a `-summary.csv` has the counts
+per option set, the number of items to review and the backup file, and a `-review.csv` lists the items to
+review, one per row (`model`, `id`, `name`, `field`, `detail`).
 
 Every row is validated against the server before any change, and reported with a status (`pending`
 in a dry run, `applied`, `already_applied`, `skipped`, `error`) and a reason:
@@ -172,20 +184,29 @@ When a target code is still held by another option of the set, the options go th
 -   `programIndicators` (`expression`, `filter`), `programRules` (`condition`) and
     `programRuleActions` (`data`): a quoted code is recoded only when it is compared with an item of
     the option set (`#{stage.de} == 'CODE'`, `'CODE' != A{tea}`, `d2:countIfValue(#{de}, 'CODE')`, or a
-    program rule variable bound to them), since the same code may belong to other option sets. References
-    by uid, such as `programRuleActions.option`, are not affected by a code change.
+    program rule variable bound to them), since the same code may belong to other option sets.
+-   `indicators` (`numerator`, `denominator`), `validationRules` (`leftSide`, `rightSide`) and
+    `predictors` (`generator`, `sampleSkipTest`), whose aggregate expressions may compare a data element of
+    the option set with a code (`if(#{de.coc} == 'CODE', 1, 0)`), with the same rule.
 -   `eventVisualizations` dimension filters (`IN:CODE1;CODE2`, `EQ:CODE`) of the items of the option set
     (data elements, attributes and program indicators returning them), and `eventFilters` criteria
     (`eventQueryCriteria.dataFilters`). `eventReports` and `eventCharts` are legacy views over the same
     `eventVisualizations`.
 
-Reported in the summary for manual review, never changed: codes in free texts
-(`programRuleActions.content`) or out of a comparison with an item, `like` filters, tracked entity
-attribute values, and `mapViews` (on DHIS2 2.40 a mapView posted on its own is accepted but not saved,
-and a map PUT recreates its mapViews without their dimension filters).
+Listed in the `-review.csv` for manual review, never changed: codes in free texts
+(`programRuleActions.content`, and `sqlViews` queries and custom forms that mention an item of the
+option set) or out of a comparison with an item, `like` filters, tracked entity attribute values, and
+`mapViews` (on DHIS2 2.40 a mapView posted on its own is accepted but not saved, and a map PUT recreates
+its mapViews without their dimension filters).
+
+Not affected by design: references by uid (`programRuleActions.option`, option groups, program rule
+variables) and aggregate visualizations (a program data element item cannot filter by option). Not
+handled: tracker and program stage working lists (`trackedEntityInstanceFilters`,
+`programStageWorkingLists`); application data in the `dataStore` must be checked by hand.
 
 Order: options, metadata, then data (the tracker validates values against the current option codes).
-Before any change, the initial state of each option set is written to `recode_<optionSetId>_<date>.json`.
+Before any change, the initial state of each option set is written to
+`<backup-dir>/recode_<optionSetId>_<date>.json` (the directory is created if needed).
 If a step fails, the objects already changed are restored, the rows of that option set are reported as
 `error`, and the next option set is processed.
 
