@@ -8,14 +8,28 @@ import { EDValidationStrategy } from "./options/EDValidationStrategy";
 import { AggrValidationStrategy } from "./options/AggrValidationStrategy";
 import { Id } from "./Base";
 import { ServiceValidationStrategy } from "./options/ServiceValidationStrategy";
+import { SquareBracketsValidationStrategy } from "./options/SquareBracketsValidationStrategy";
 
-export type ValidationRule =
-    | "special_characters"
-    | "lowercase_chars"
-    | "naming_conventions"
-    | "invalid_service"
-    | "invalid_project"
-    | "not_pattern_found";
+const validationRules = [
+    "special_characters",
+    "lowercase_chars",
+    "naming_conventions",
+    "invalid_service",
+    "invalid_project",
+    "not_pattern_found",
+    "square_brackets",
+    "duplicated_code",
+] as const;
+
+export type ValidationRule = (typeof validationRules)[number];
+
+/**
+ * `categories` applies the OCB naming conventions of the option set category. `square_brackets`
+ * replaces them: the code of every option becomes the content of the square brackets of its name.
+ */
+export const validationModes = ["categories", "square_brackets"] as const;
+
+export type ValidationMode = (typeof validationModes)[number];
 
 type OptionSetValidatorAttrs = {
     optionSet: OptionSet;
@@ -46,7 +60,9 @@ export class OptionSetValidator extends Struct<OptionSetValidatorAttrs>() {
     }
 
     static validate(optionSet: OptionSet, params: SettingsValidation): ValidationError[] {
-        return this.getErrorsByCategory({ optionSet, ...params });
+        return params.mode === "square_brackets"
+            ? new SquareBracketsValidationStrategy().validate(optionSet)
+            : this.getErrorsByCategory({ optionSet, ...params });
     }
 
     private static getErrorsByCategory(
@@ -71,4 +87,9 @@ export class OptionSetValidator extends Struct<OptionSetValidatorAttrs>() {
     }
 }
 
-export type SettingsValidation = { services: Project[]; projects: Service[]; exceptions: Exceptions[] };
+export type SettingsValidation = {
+    services: Project[];
+    projects: Service[];
+    exceptions: Exceptions[];
+    mode: ValidationMode;
+};
