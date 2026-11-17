@@ -36,8 +36,35 @@ import { findLikeFilters, recodeDimensionCollections, recodeQueryCriteria } from
  * a map PUT recreates its mapViews without their dimension filters.
  */
 export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
-    /** `backupDir`: where the initial state of each option set is saved before it is recoded. */
-    constructor(private api: D2Api, private options: { backupDir: string }) {}
+    /**
+     * - `backupDir`: where the initial state of each option set is saved before it is recoded.
+     * - `eventsPerWindow`: largest window of events read with offset paging (default EVENTS_PER_WINDOW).
+     */
+    constructor(private api: D2Api, private options: { backupDir: string; eventsPerWindow?: number }) {}
+
+    /** Events to recode, by option set, found by `prepare` in a single scan of the stages. */
+    private preparedCandidates = new Map<Id, Set<Id>>();
+
+    /**
+     * Scan the stages once for all the plans, instead of once per option set: a stage shared by
+     * several option sets (on a central server, millions of events) is read only once. Only the uids
+     * of the matching events are kept, by option set.
+     *
+     * A data element belongs to a single option set, so recoding one set does not change the
+     * candidates of another. Events entered during the run are not seen (data entry must be stopped).
+     */
+    async prepare(plans: OptionSetRecodePlan[]): Async<void> {
+        const planByDataElement = new Map<Id, OptionSetRecodePlan>();
+        for (const plan of plans) {
+            const items = await this.getItems(plan.optionSet.id);
+            getTrackerDataElements(items).forEach(dataElement => planByDataElement.set(dataElement.id, plan));
+        }
+
+        const candidates = await this.scanStages(planByDataElement);
+        this.preparedCandidates = new Map(
+            plans.map(plan => [plan.optionSet.id, candidates.get(plan.optionSet.id) ?? new Set<Id>()])
+        );
+    }
 
     async recode(plan: OptionSetRecodePlan, options: { dryRun: boolean }): Async<RecodeSummary> {
         const { optionSet } = plan;
@@ -244,30 +271,19 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
      * elements are scanned with only their values, and the matching ones are then fetched in full.
      */
     private async getEvents(plan: OptionSetRecodePlan, items: Items): Async<D2Event[]> {
-        const trackerDataElements = items.dataElements.filter(
-            dataElement => dataElement.domainType === "TRACKER"
-        );
+        const trackerDataElements = getTrackerDataElements(items);
         const dataElementIds = new Set(ids(trackerDataElements));
         const isRecoded = (dataValue: D2DataValue) =>
             dataElementIds.has(dataValue.dataElement) && hasCode(plan, dataValue.value);
 
-        const stages = await this.getObjects<{ id: Id; program: Ref }>(
-            "programStages",
-            [`programStageDataElements.dataElement.id:in:[${ids(trackerDataElements)}]`],
-            "id,program[id]",
-            { skipIfEmpty: trackerDataElements }
-        );
+        const candidates =
+            this.preparedCandidates.get(plan.optionSet.id) ??
+            (
+                await this.scanStages(new Map(trackerDataElements.map(dataElement => [dataElement.id, plan])))
+            ).get(plan.optionSet.id) ??
+            new Set<Id>();
+        const candidateIds = Array.from(candidates);
 
-        const candidateIds: Id[] = [];
-        for (const stage of stages) {
-            const params = { program: stage.program.id, programStage: stage.id };
-            const events = await this.getEventsPaged(params, "event,dataValues[dataElement,value]");
-            candidateIds.push(
-                ...events.filter(event => event.dataValues.some(isRecoded)).map(event => event.event)
-            );
-        }
-
-        const candidates = new Set(candidateIds);
         const events: D2Event[] = [];
         for (const chunk of _.chunk(_.uniq(candidateIds), EVENTS_BY_ID_CHUNK_SIZE)) {
             // `event` on 2.40, `events` on later versions: send both, keep only the requested uids.
@@ -288,23 +304,181 @@ export class OptionSetRecodeD2Repository implements OptionSetRecodeRepository {
             .value();
     }
 
+    /**
+     * Read the values of every event of the stages that hold the given data elements, and return the
+     * uids of the events with a value to recode, by option set. Values are compared against the plan
+     * of their data element, so a stage shared by several option sets is read once.
+     */
+    private async scanStages(planByDataElement: Map<Id, OptionSetRecodePlan>): Async<Map<Id, Set<Id>>> {
+        const dataElementIds = Array.from(planByDataElement.keys());
+        const stages = _.uniqBy(
+            _.flatten(
+                await promiseMapSerial(_.chunk(dataElementIds, IDS_PER_FILTER), chunk =>
+                    this.getObjects<{ id: Id; name: string; program: Ref }>(
+                        "programStages",
+                        [`programStageDataElements.dataElement.id:in:[${chunk.join(",")}]`],
+                        "id,name,program[id]"
+                    )
+                )
+            ),
+            stage => stage.id
+        );
+
+        const candidates = new Map<Id, Set<Id>>();
+        const end = await this.getScanEnd();
+
+        for (const [index, stage] of stages.entries()) {
+            const start = Date.now();
+            const matched = new Set<Id>();
+
+            const total = await this.scanStage(stage, end, events => {
+                for (const event of events) {
+                    for (const dataValue of event.dataValues) {
+                        const plan = planByDataElement.get(dataValue.dataElement);
+                        if (!plan || !hasCode(plan, dataValue.value)) continue;
+                        const setCandidates = candidates.get(plan.optionSet.id) ?? new Set<Id>();
+                        candidates.set(plan.optionSet.id, setCandidates.add(event.event));
+                        matched.add(event.event);
+                    }
+                }
+            });
+
+            const seconds = ((Date.now() - start) / 1000).toFixed(1);
+            logger.info(
+                `Scanned stage ${index + 1}/${stages.length} ${stage.name} [${stage.id}]: ` +
+                    `${total} events, ${matched.size} to recode (${seconds}s)`
+            );
+        }
+
+        return candidates;
+    }
+
+    /**
+     * Read the values of every event of a stage, page by page, passing each page to `visit` (a stage
+     * may hold millions of events, which are not kept in memory). Returns the number of events.
+     *
+     * A large stage is read in windows of `updatedAt` (every event has one, unlike `occurredAt`),
+     * halved until each one holds at most `eventsPerWindow` events: with offset paging, the deep
+     * pages of a stage with millions of events get slower and slower. The windows are half-open
+     * (`updatedAfter` is inclusive and `updatedBefore` exclusive), so they cover the whole range with
+     * no gap nor overlap. In any case, the events read must add up to the count of the stage, or the
+     * scan fails: an event missed would keep its old code.
+     */
+    private async scanStage(
+        stage: { id: Id; name: string; program: Ref },
+        end: number,
+        visit: (events: D2Event[]) => void
+    ): Async<number> {
+        const base = { program: stage.program.id, programStage: stage.id };
+        const perWindow = this.options.eventsPerWindow ?? EVENTS_PER_WINDOW;
+        const total = await this.countEvents(base);
+        if (total === 0) return 0;
+
+        const seen = new Set<Id>();
+        const visitNew = (events: D2Event[]) => {
+            const fresh = events.filter(event => !seen.has(event.event));
+            fresh.forEach(event => seen.add(event.event));
+            visit(fresh);
+        };
+
+        const scanWindow = async (from: number, to: number): Async<void> => {
+            const params = { ...base, updatedAfter: formatDate(from), updatedBefore: formatDate(to) };
+            const count = await this.countEvents(params);
+            if (count === 0) return;
+            if (count <= perWindow || to - from <= MIN_WINDOW_MS) {
+                await this.forEachEventPage(params, SCAN_FIELDS, visitNew);
+            } else {
+                const middle = from + Math.floor((to - from) / 2);
+                await scanWindow(from, middle);
+                await scanWindow(middle, to);
+            }
+        };
+
+        if (total <= perWindow) {
+            await this.forEachEventPage(base, SCAN_FIELDS, visitNew);
+        } else {
+            await scanWindow(await this.getFirstUpdatedAt(base), end);
+        }
+
+        if (seen.size !== total)
+            throw new Error(
+                `Stage ${stage.name} [${stage.id}]: ${seen.size} events read, ${total} expected ` +
+                    `(were events entered during the scan?)`
+            );
+        return total;
+    }
+
+    /** End of the scan windows: a day after the server date, in the server time zone like `updatedAt`. */
+    private async getScanEnd(): Async<number> {
+        const { serverDate } = await this.api.get<{ serverDate: string }>("/system/info").getData();
+        return parseDate(serverDate) + DAY_MS;
+    }
+
+    private async getFirstUpdatedAt(params: Record<string, string>): Async<number> {
+        const { instances = [] } = await this.api
+            .get<{ instances?: Array<{ updatedAt: string }> }>("/tracker/events", {
+                ...params,
+                fields: "updatedAt",
+                ouMode: "ACCESSIBLE",
+                order: "updatedAt:asc",
+                pageSize: 1,
+            })
+            .getData();
+        const first = instances[0]?.updatedAt;
+        if (!first) throw new Error(`No updatedAt for the first event of ${JSON.stringify(params)}`);
+        return parseDate(first);
+    }
+
+    private async countEvents(params: Record<string, string>): Async<number> {
+        const res = await this.api
+            .get<{ total?: number; pager?: { total?: number } }>("/tracker/events", {
+                ...params,
+                fields: "event",
+                ouMode: "ACCESSIBLE",
+                pageSize: 1,
+                totalPages: true,
+            })
+            .getData();
+        const total = res.total ?? res.pager?.total;
+        if (total === undefined) throw new Error(`No event count for ${JSON.stringify(params)}`);
+        return total;
+    }
+
+    private async forEachEventPage(
+        params: Record<string, string>,
+        fields: string,
+        visit: (events: D2Event[]) => void
+    ): Async<void> {
+        for (let page = 1; ; page++) {
+            const instances = await this.getEventsPage(params, fields, page);
+            visit(instances);
+            if (instances.length < EVENTS_PAGE_SIZE) return;
+        }
+    }
+
     private async getEventsPaged(params: Record<string, string>, fields: string): Async<D2Event[]> {
         const events: D2Event[] = [];
-        for (let page = 1; ; page++) {
-            const { instances = [] } = await this.api
-                .get<{ instances?: D2Event[] }>("/tracker/events", {
-                    ...params,
-                    fields,
-                    ouMode: "ACCESSIBLE",
-                    // Without an explicit unique order, pages may skip or repeat events.
-                    order: "event:asc",
-                    page,
-                    pageSize: EVENTS_PAGE_SIZE,
-                })
-                .getData();
-            events.push(...instances);
-            if (instances.length < EVENTS_PAGE_SIZE) return events;
-        }
+        await this.forEachEventPage(params, fields, instances => events.push(...instances));
+        return events;
+    }
+
+    private async getEventsPage(
+        params: Record<string, string>,
+        fields: string,
+        page: number
+    ): Async<D2Event[]> {
+        const { instances = [] } = await this.api
+            .get<{ instances?: D2Event[] }>("/tracker/events", {
+                ...params,
+                fields,
+                ouMode: "ACCESSIBLE",
+                // Without an explicit unique order, pages may skip or repeat events.
+                order: "event:asc",
+                page,
+                pageSize: EVENTS_PAGE_SIZE,
+            })
+            .getData();
+        return instances;
     }
 
     private async getByDimensions(
@@ -722,6 +896,27 @@ function withTemporaryCodes(options: D2Object[]): D2Object[] {
     return options.map(option => ({ ...option, code: `${TEMPORARY_CODE_PREFIX}${option.id}` }));
 }
 
+/** DHIS2 dates have no time zone (server time): they are handled as UTC to compute the windows. */
+function parseDate(value: string): number {
+    const time = Date.parse(`${value.replace(/Z$/, "")}Z`);
+    if (Number.isNaN(time)) throw new Error(`Invalid date: ${value}`);
+    return time;
+}
+
+function formatDate(time: number): string {
+    return new Date(time).toISOString().replace(/Z$/, "");
+}
+
+function getTrackerDataElements(items: Items): DataElement[] {
+    return items.dataElements.filter(dataElement => dataElement.domainType === "TRACKER");
+}
+
+async function promiseMapSerial<T, U>(values: T[], fn: (value: T) => Promise<U>): Promise<U[]> {
+    const results: U[] = [];
+    for (const value of values) results.push(await fn(value));
+    return results;
+}
+
 function getItemRefs(items: Items, variableNames: string[]): ItemRefs {
     return { ...pick(items), variableNames };
 }
@@ -782,6 +977,13 @@ function truncate(text: string): string {
 }
 
 const TEMPORARY_CODE_PREFIX = "TMP_";
+const IDS_PER_FILTER = 100;
+const SCAN_FIELDS = "event,dataValues[dataElement,value]";
+/** Largest window read with offset paging (50 pages): deeper pages get slower on large stages. */
+const EVENTS_PER_WINDOW = 50_000;
+/** A window is not split below this, even when it holds more events (they are then paged deeper). */
+const MIN_WINDOW_MS = 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const ERROR_DETAIL_LENGTH = 2000;
 const EVENTS_PAGE_SIZE = 1000;
 const EVENTS_CHUNK_SIZE = 500;

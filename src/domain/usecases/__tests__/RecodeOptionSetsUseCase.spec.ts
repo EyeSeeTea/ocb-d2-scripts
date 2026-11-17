@@ -25,10 +25,16 @@ class OptionSetTestRepository implements OptionSetRepository {
 
 class RecodeTestRepository implements OptionSetRecodeRepository {
     calls: Array<{ plan: OptionSetRecodePlan; dryRun: boolean }> = [];
+    events: string[] = [];
     constructor(private failingSetId?: string) {}
+
+    async prepare(plans: OptionSetRecodePlan[]): Async<void> {
+        this.events.push(`prepare ${plans.map(plan => plan.optionSet.id).join(",")}`);
+    }
 
     async recode(plan: OptionSetRecodePlan, options: { dryRun: boolean }): Async<RecodeSummary> {
         this.calls.push({ plan, dryRun: options.dryRun });
+        this.events.push(`recode ${plan.optionSet.id}`);
         if (plan.optionSet.id === this.failingSetId) throw new Error("E1029 org unit");
         return {
             optionSetId: plan.optionSet.id,
@@ -52,7 +58,7 @@ async function execute(update: boolean, failingSetId?: string) {
     const recodeRepository = new RecodeTestRepository(failingSetId);
     const useCase = new RecodeOptionSetsUseCase(new OptionSetTestRepository(), recodeRepository);
     const result = await useCase.execute({ changes, includeToBeConfirmed: false, update });
-    return { ...result, calls: recodeRepository.calls };
+    return { ...result, calls: recodeRepository.calls, events: recodeRepository.events };
 }
 
 describe("RecodeOptionSetsUseCase", () => {
@@ -64,6 +70,12 @@ describe("RecodeOptionSetsUseCase", () => {
             ["setA", true],
             ["setB", true],
         ]);
+    });
+
+    it("prepares all the plans at once, before recoding any of them", async () => {
+        const { events } = await execute(false);
+
+        expect(events).toEqual(["prepare setA,setB", "recode setA", "recode setB"]);
     });
 
     it("marks the rows applied on update", async () => {

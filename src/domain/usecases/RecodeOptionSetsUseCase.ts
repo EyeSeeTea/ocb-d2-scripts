@@ -27,6 +27,7 @@ export class RecodeOptionSetsUseCase {
         });
 
         logger.info(`Rows: ${results.length}, option sets to recode: ${plans.length}`);
+        if (plans.length > 0) await this.recodeRepository.prepare(plans);
 
         const summaries: RecodeSummary[] = [];
         const failures: Record<string, string> = {};

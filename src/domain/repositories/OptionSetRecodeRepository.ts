@@ -54,6 +54,12 @@ export type RecodeSummary = {
  * to the option. That propagation is a storage concern, so it lives behind this interface.
  */
 export interface OptionSetRecodeRepository {
+    /**
+     * Load in a single pass what the recode of these plans needs to read (on a large server, reading
+     * the data once instead of once per option set). Called before `recode`, which also works without it.
+     */
+    prepare(plans: OptionSetRecodePlan[]): Async<void>;
+
     /** Recode the option set and every reference to its codes. Rolls back and throws on error. */
     recode(plan: OptionSetRecodePlan, options: { dryRun: boolean }): Async<RecodeSummary>;
 }

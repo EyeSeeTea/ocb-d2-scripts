@@ -180,7 +180,11 @@ Each option set is recoded as a whole: every value is mapped once from its origi
 When a target code is still held by another option of the set, the options go through temporary codes
 (`TMP_<optionId>`) first. The script recodes:
 
--   `dataValues` and tracker `events` of the data elements of the option set.
+-   `dataValues` and tracker `events` of the data elements of the option set. Events are found by reading
+    the values of every event of the stages that hold the data elements: each stage is read once for all
+    the option sets of the mapping, a large stage in windows of `updatedAt` (at most 50,000 events each),
+    and the events read must add up to the count of the stage, or the run fails. Data entry must be
+    stopped while it runs.
 -   `programIndicators` (`expression`, `filter`), `programRules` (`condition`) and
     `programRuleActions` (`data`): a quoted code is recoded only when it is compared with an item of
     the option set (`#{stage.de} == 'CODE'`, `'CODE' != A{tea}`, `d2:countIfValue(#{de}, 'CODE')`, or a
